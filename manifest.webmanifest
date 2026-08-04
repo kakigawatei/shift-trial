@@ -1,0 +1,9 @@
+{
+  "name": "シフト希望（おはし二日町）",
+  "short_name": "シフト希望",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f4f6f9",
+  "theme_color": "#2a6e5a",
+  "icons": [{ "src": "icon-180.png", "sizes": "180x180", "type": "image/png" }]
+}
