@@ -288,7 +288,40 @@ function save(){ DATA.updatedAt=Date.now(); dirty=true; setSync("同期中…");
   clearTimeout(pushTimer); pushTimer=setTimeout(function(){ cloudPut(doc,data); },600); }
 /* 未送信の変更を今すぐ送る（店舗を切り替える前・画面を閉じる前） */
 function flush(){ if(!dirty)return; clearTimeout(pushTimer); cloudPut(SHOP.doc,DATA); }
-function pull(){ var doc=SHOP.doc;
+/* ---- 両店舗をかけもちするスタッフ（兼務）のための「他のお店の予定」 ----
+   ・他のお店のデータは【見るだけ】。書き込みも端末キャッシュの上書きもしないので、
+     もう一方のお店の保存内容に影響しません。
+   ・同じ人かどうかは【名前】で見ます（両方のお店で同じ名前で登録してください）。
+   ・兼務にしたスタッフが1人もいないお店では、いっさい読みに行きません。 */
+var XDATA={}, XJSON={};
+function otherShops(){ return SHOPS.filter(function(s){ return s.id!==SHOP.id; }); }
+function hasBoth(){ return (DATA.staff||[]).some(function(s){ return s.both; }); }
+function nrmName(n){ return (""+(n==null?"":n)).replace(/[\s　]/g,""); }
+function loadOther(){
+  if(!hasBoth()) return;
+  otherShops().forEach(function(s){
+    if(!XDATA[s.id]){ try{ var c=ls(cacheKey(s.id)); if(c) XDATA[s.id]=JSON.parse(c); }catch(e){} }
+    cloudGet(s.doc).then(function(d){ if(!d)return; var j=JSON.stringify(d);
+      if(XJSON[s.id]===j)return; XJSON[s.id]=j; XDATA[s.id]=d; render(); }).catch(function(){});
+  });
+}
+/* その人が他のお店でこの日に入っている時間（兼務にした人だけ） */
+function otherBusy(sid,day){
+  var s=staffBy(sid); if(!s||!s.both) return [];
+  var nm=nrmName(s.name), out=[];
+  otherShops().forEach(function(sh){
+    var d=XDATA[sh.id]; if(!d||!d.staff||!d.staff.length) return;
+    var m=d.staff.filter(function(x){ return nrmName(x.name)===nm; })[0]; if(!m) return;
+    (((d.shift||{})[day])||[]).forEach(function(e){
+      if(e.sid===m.id) out.push({ shop:sh.name, f:minutes(e.f), t:minutes(e.t) }); });
+  });
+  return out;
+}
+function otherHit(sid,day,f,t){ return otherBusy(sid,day).some(function(b){ return overlapMM(b.f,b.t,f,t); }); }
+function otherLabel(sid,day){ return otherBusy(sid,day).map(function(b){
+  return b.shop+" "+fmtT(b.f)+"〜"+fmtT(b.t); }).join("／"); }
+
+function pull(){ var doc=SHOP.doc; loadOther();
   return cloudGet(doc).then(function(remote){ if(doc!==SHOP.doc)return; if(!remote)return;
     if(dirty){ cloudPut(doc,DATA); return; }
     if((remote.updatedAt||0)>(DATA.updatedAt||0)){ DATA=remote;
@@ -330,7 +363,7 @@ var MDAY=16;
 /* 店舗のデータ（キャッシュ）と、その店舗で選んでいた名前を読み込む */
 function loadShop(id){
   applyShop(id);
-  DATA=emptyData();
+  DATA=emptyData(); XDATA={}; XJSON={};
   try{ var c=ls(cacheKey(id)); if(c)DATA=Object.assign(DATA,JSON.parse(c)); }catch(e){}
   ROLE=ls(roleKey(id))||"";
   ensureColors();
@@ -411,7 +444,8 @@ function viewStaff(st){
   var sub=DATA.submitted[st.id];
   return hd(PERIOD.label+"のシフト希望", st.name+"さん", false, true)
     +'<div class="wrap">'+shopSw()
-    +'<p class="tip">出られない日は「休み」、時間の制限がある日だけ「時間指定」。何もしない日は「出られる」のままでOKです。途中で閉じても自動保存されます。</p>'+rows
+    +'<p class="tip">出られない日は「休み」、時間の制限がある日だけ「時間指定」。何もしない日は「出られる」のままでOKです。途中で閉じても自動保存されます。</p>'
+    +(st.both?'<p class="tip">🔁 あなたは<b>両方のお店で働く</b>登録です。もう一方のお店の希望は、上のボタンでお店を切り替えて、そちらでも入力してください。</p>':'')+rows
     +'<div style="text-align:center;margin-top:14px"><button class="linkbtn" onclick="pickRole(\'\')">名前の選択にもどる</button></div></div>'
     +'<div class="foot"><div class="stat">休み '+ngN+'日・時間指定 '+tmN+'日'+(sub?'　✅提出済み（修正したら再提出）':'')+'</div>'
     +'<button class="send" onclick="submitReq(\''+st.id+'\')">この内容で提出する</button></div>';
@@ -562,7 +596,8 @@ function mgrBoard(){
       var s=staffBy(e.sid); if(!s)return "";
       var f=minutes(e.f),t=minutes(e.t);
       var L=(f-DAY_OPEN)/span*100, W2=(t-f)/span*100;
-      var warn=!fitsReq(e.sid,MDAY,f,t)||hasDup(MDAY,e)||!canPos(s,e.pos)||!fitsPos(e.pos,MDAY,f,t)||posDup(MDAY,e);
+      var warn=!fitsReq(e.sid,MDAY,f,t)||hasDup(MDAY,e)||!canPos(s,e.pos)||!fitsPos(e.pos,MDAY,f,t)||posDup(MDAY,e)
+               ||otherHit(e.sid,MDAY,f,t);
       var pos=LN>1?'top:'+(3+lz.lane[ix]*(rowH-6)/LN).toFixed(1)+'px;height:'+bh.toFixed(1)+'px;bottom:auto;':'';
       return '<div class="gband'+(warn?' warn':'')+'" style="'+pos+'left:'+L.toFixed(2)+'%;width:'+W2.toFixed(2)+'%;background:'+staffColor(e.sid)+'" onclick="event.stopPropagation();openEnt('+MDAY+',\''+e.id+'\')">'+esc(s.name)+(warn?'⚠':'')+'</div>';
     }).join("");
@@ -577,8 +612,18 @@ function mgrBoard(){
   var needSum=needsFor(MDAY).reduce(function(a,b){return a+b;},0);
   var sum='<div class="gsum"><span>'+(isHol(MDAY)?"土日祝":"平日")+'の必要 のべ'+needSum+'時間</span><span>のべ '+(Math.round(totalMin/6)/10)+'時間</span>'
     +'<span>概算人件費 ¥'+Math.round(totalMin/60*WAGE).toLocaleString()+'（時給'+WAGE.toLocaleString()+'円換算）</span></div>';
-  return nav+bar+'<div class="gantt"><div class="gsc"><div class="gin"'+gin+'>'+head+rows+needs+'</div></div>'+sum+'</div>'
-   +'<p class="tip">帯をタップ＝編集、あいている場所をタップ＝その位置に追加。下の数字は「入っている人数／必要人数」（赤＝不足）。必要人数は'+esc(SHOP.name)+'の'+(isHol(MDAY)?"土日祝":"平日")+'の設定です。うすいグレーの帯＝そのポジションを使う時間（「⏱ ポジションの時間設定」で変えられます）。⚠＝希望・条件と合わない／同じ人が重なっている／そのポジションを担当できない／そのポジションを使う時間から外れている／同じポジションの同じ時間に2人以上入っています（このときは帯を上下2段に分けて表示します）。</p>';
+  /* 社員（先に配置する人）と、兼務スタッフの他店の予定を知らせる */
+  var empNames=DATA.staff.filter(function(s){return s.emp;}).map(function(s){return s.name;});
+  var einfo=empNames.length? '<p class="tip">👔 社員：'+esc(empNames.join("・"))+'　…「✨下書きを自動作成」ではこの人たちを先に入れ、足りないところにアルバイトが入ります。</p>' : '';
+  var xinfo="";
+  if(hasBoth()){
+    var lines=DATA.staff.filter(function(s){return s.both;}).map(function(s){
+      var l=otherLabel(s.id,MDAY); return l? esc(s.name)+"："+esc(l) : ""; }).filter(Boolean);
+    xinfo='<p class="tip">🔁 両店舗のスタッフ：'+(lines.length? 'この日は他のお店で '+lines.join("／")+'　の予定です（自動作成ではこの時間に入れません）。'
+      : 'この日は他のお店の予定はありません。')+'</p>';
+  }
+  return nav+bar+'<div class="gantt"><div class="gsc"><div class="gin"'+gin+'>'+head+rows+needs+'</div></div>'+sum+'</div>'+einfo+xinfo
+   +'<p class="tip">帯をタップ＝編集、あいている場所をタップ＝その位置に追加。下の数字は「入っている人数／必要人数」（赤＝不足）。必要人数は'+esc(SHOP.name)+'の'+(isHol(MDAY)?"土日祝":"平日")+'の設定です。うすいグレーの帯＝そのポジションを使う時間（「⏱ ポジションの時間設定」で変えられます）。⚠＝希望・条件と合わない／同じ人が重なっている／そのポジションを担当できない／そのポジションを使う時間から外れている／同じポジションの同じ時間に2人以上入っています（このときは帯を上下2段に分けて表示します）／他のお店で同じ時間に入っています。</p>';
 }
 function trackTap(ev,pos){ var r=ev.currentTarget.getBoundingClientRect();
   var frac=(ev.clientX-r.left)/r.width;
@@ -594,7 +639,9 @@ function openEnt(day,eid,posDef,fDef){
   var f=e?e.f:fmtHM(fDef!=null?fDef:(b?b[0]:DAY_OPEN));
   var t=e?e.t:fmtHM(Math.min((fDef==null&&b)?b[1]:minutes(f)+240,DAY_CLOSE));
   var sopts='<option value="">選んでください</option>'+DATA.staff.map(function(s){
-    return '<option value="'+s.id+'"'+(e&&e.sid===s.id?' selected':'')+'>'+esc(s.name)+'（希望'+reqLabel(s.id,day)+'）</option>'; }).join("");
+    var xl=otherLabel(s.id,day);
+    return '<option value="'+s.id+'"'+(e&&e.sid===s.id?' selected':'')+'>'+(s.emp?'👔':'')+esc(s.name)
+      +'（希望'+reqLabel(s.id,day)+(xl?'／他店 '+esc(xl):'')+'）</option>'; }).join("");
   el("sheet").innerHTML='<h3>8/'+day+'（'+WD[wday(day)]+'）　シフトの'+(e?'編集':'追加')+'</h3>'
    +'<div class="frow">だれ：<select id="ent_s" onchange="posOpts()">'+sopts+'</select></div>'
    +'<div class="frow">どこ：<select id="ent_p">'+posOptsHtml(e?e.sid:"",e?e.pos:dflt,day)+'</select></div>'
@@ -675,7 +722,8 @@ function saveEnt(day,eid){
   var ents=shiftOf(day);
   if(eid){ var e=ents.filter(function(x){return x.id===eid;})[0]; if(e){ e.sid=sid; e.pos=pos; e.f=f; e.t=t; } }
   else ents.push({id:uid(),sid:sid,pos:pos,f:f,t:t});
-  if(!canPos(staffBy(sid),pos)) toast("※このポジションは担当外で登録しました（⚠表示）");
+  if(otherHit(sid,day,minutes(f),minutes(t))) toast("※他のお店（"+otherLabel(sid,day)+"）と重なっています（⚠表示）");
+  else if(!canPos(staffBy(sid),pos)) toast("※このポジションは担当外で登録しました（⚠表示）");
   else if(!fitsPos(pos,day,minutes(f),minutes(t))){ var b=bandOf(pos,day);
     toast("※"+posLabel(pos)+"は"+fmtT(b[0])+"〜"+fmtT(b[1])+"の時間です（⚠表示）"); }
   save(); closeSheet(); render();
@@ -694,25 +742,46 @@ function autoDraft(){
     (DATA.shift[d]||[]).forEach(function(e){ minsA[e.sid]=(minsA[e.sid]||0)+(minutes(e.t)-minutes(e.f));
       if(!seen[e.sid]){ days[e.sid]=(days[e.sid]||0)+1; seen[e.sid]=1; } }); });
   function tgt(s){ return s.wk? Math.max(1,Math.round(s.wk*PERIOD.days.length/7)) : 999; }
-  var act={}, out=[], done={};
+  var act={}, out=[], done={}, started={};
   /* 1人が続けて入る上限（設定した店舗だけ。未設定＝従来どおり上限なし） */
   var MAXSH=SHOP.maxShift||0;
+  /* 社員＝先に配置する人。基本終日なので「続けて入る上限」と「一度上がったら終わり」の対象外 */
+  var EMP={}; DATA.staff.forEach(function(s){ if(s.emp)EMP[s.id]=1; });
+  var nEmp=Object.keys(EMP).length;
+  /* その枠に入れるか：本人の希望・条件に合い、かつ他のお店の予定と重ならないこと */
+  function freeAt(sid,f,t){ return fitsReq(sid,MDAY,f,t)&&!otherHit(sid,MDAY,f,t); }
+  /* だれから入れるか（回数の少ない人・働いた時間が短い人から） */
+  function rank(x,y){ var rx=(days[x.id]||0)/tgt(x), ry=(days[y.id]||0)/tgt(y);
+    if(rx!==ry)return rx<ry?-1:1; return (minsA[x.id]||0)-(minsA[y.id]||0); }
+  /* 社員は人数が減る時間にいったん外れて後でまた入ることがあるので、
+     その日の回数は1回だけ数える（アルバイトの数え方は従来どおり変えない） */
+  function startEmp(sid,f,t,next){ next[sid]={f:f,t:t};
+    if(!started[sid]){ days[sid]=(days[sid]||0)+1; started[sid]=1; } }
   SLOTS.forEach(function(sl){
     var f=minutes(sl.from), t=minutes(sl.to), next={};
-    /* 前の枠から続けられる人を優先（長い帯になる）。
+    /* ① まず社員を入れる。すでに入っている社員はそのまま延長（終日つながった帯になる） */
+    if(nEmp) DATA.staff.filter(function(s){ return EMP[s.id]&&freeAt(s.id,f,t); })
+      .sort(function(x,y){ var ax=act[x.id]?0:1, ay=act[y.id]?0:1;   /* 続けて入っている人が先 */
+        if(ax!==ay)return ax-ay; return rank(x,y); })
+      .forEach(function(s){
+        if(Object.keys(next).length>=sl.need)return;
+        if(act[s.id]&&freeAt(s.id,act[s.id].f,t)){ next[s.id]=act[s.id]; next[s.id].t=t; }
+        else startEmp(s.id,f,t,next); });
+    /* ② 前の枠から続けられるアルバイトを残す（長い帯になる）。
        人数が減る時間に誰を残すかは、上限を設けた店舗では「働いている時間が短い人を残す」
        ＝長く働いた人から先に上がってもらう（1時間だけの細切れシフトを防ぐ） */
-    var carry=Object.keys(act);
+    var carry=Object.keys(act).filter(function(sid){ return !EMP[sid]&&!next[sid]; });
     if(MAXSH) carry.sort(function(a,b){ return act[b].f-act[a].f; });
-    carry.forEach(function(sid){ if(Object.keys(next).length<sl.need&&fitsReq(sid,MDAY,act[sid].f,t)
+    carry.forEach(function(sid){ if(Object.keys(next).length<sl.need&&freeAt(sid,act[sid].f,t)
       &&(!MAXSH||t-act[sid].f<=MAXSH)){ next[sid]=act[sid]; next[sid].t=t; } });
     /* この枠で上がった人は、同じ日にもう一度入れない（上限を設けた店舗のみ）。
        ここを「後回し」にしていたため、上がった直後の枠でその人がまた選ばれてしまい、
-       それまで働いていた帯が消える／同じ人が細切れに分かれる原因になっていた */
-    if(MAXSH) Object.keys(act).forEach(function(sid){ if(!next[sid]) done[sid]=1; });
-    var cands=DATA.staff.filter(function(s){ return !next[s.id]&&!done[s.id]&&fitsReq(s.id,MDAY,f,t); })
-      .sort(function(x,y){ var rx=(days[x.id]||0)/tgt(x), ry=(days[y.id]||0)/tgt(y);
-        if(rx!==ry)return rx<ry?-1:1; return (minsA[x.id]||0)-(minsA[y.id]||0); });
+       それまで働いていた帯が消える／同じ人が細切れに分かれる原因になっていた
+       （社員は終日つづける前提なので対象外） */
+    if(MAXSH) Object.keys(act).forEach(function(sid){ if(!EMP[sid]&&!next[sid]) done[sid]=1; });
+    /* ③ 足りないところをアルバイトで埋める */
+    var cands=DATA.staff.filter(function(s){ return !EMP[s.id]&&!next[s.id]&&!done[s.id]&&freeAt(s.id,f,t); })
+      .sort(rank);
     while(Object.keys(next).length<sl.need&&cands.length){ var s=cands.shift(); next[s.id]={f:f,t:t}; days[s.id]=(days[s.id]||0)+1; }
     /* 続けて働く人（next に同じ帯が入っている人）以外は、ここで帯を確定させる。
        「!next[sid]」だと上がった人が同じ枠で入り直したときに帯を取りこぼすので、同じ帯かどうかで見る */
@@ -734,6 +803,8 @@ function autoDraft(){
   var lack=0; SLOTS.forEach(function(sl){ var m=minutes(sl.from), got=0;
     out.forEach(function(e){ if(e.f<=m&&m<e.t)got++; }); if(got<sl.need) lack+=sl.need-got; });
   var msg="下書きを作成しました";
+  var eIn={}; out.forEach(function(e){ if(EMP[e.sid]) eIn[e.sid]=1; });
+  if(Object.keys(eIn).length) msg+="（社員"+Object.keys(eIn).length+"人を先に配置）";
   if(lack) msg+="（のべ"+lack+"時間ぶん人が足りません・赤い数字の時間）";
   if(ng) msg+="（⚠"+ng+"件は担当できるポジションが空いていません）";
   save(); toast(msg); render();
@@ -744,7 +815,8 @@ function mgrStaff(){
   ensureColors();
   var n=DATA.staff.length;
   var rows=DATA.staff.map(function(s,i){
-    var cond=[]; if(s.avF||s.avT)cond.push((s.avF||"開店")+"〜"+(s.avT||"閉店")); if(s.wk)cond.push("週"+s.wk+"回");
+    var cond=[]; if(s.emp)cond.push("👔社員"); if(s.both)cond.push("🔁両店舗");
+    if(s.avF||s.avT)cond.push((s.avF||"開店")+"〜"+(s.avT||"閉店")); if(s.wk)cond.push("週"+s.wk+"回");
     if(s.pos&&s.pos.length&&s.pos.length<POS.length){
       var nm=s.pos.slice(0,3).map(posLabel).join("・");
       cond.push(nm+(s.pos.length>3?"他"+(s.pos.length-3):""));
@@ -758,16 +830,21 @@ function mgrStaff(){
   }).join("");
   return '<div class="card">'+(rows||'<p class="tip">タップして最初のスタッフを追加してください。</p>')
     +'<div class="addrow"><input id="newname" placeholder="スタッフの名前"><button onclick="addStaff()">追加</button></div></div>'
-    +'<p class="tip">「条件」＝基本の勤務可能時間・週の回数・<b>できるポジション</b>。設定すると「出られる」の日はその時間内でだけ組まれ、自動作成も回数と担当できるポジションを守ろうとします。</p>'
+    +'<p class="tip">「条件」＝<b>社員かアルバイトか</b>・<b>両店舗で働くか</b>・基本の勤務可能時間・週の回数・<b>できるポジション</b>。設定すると「出られる」の日はその時間内でだけ組まれ、自動作成も回数と担当できるポジションを守ろうとします。</p>'
+    +'<p class="tip">👔<b>社員</b>にした人は、自動作成でいちばん先に配置されます（できるだけ長く1本の帯で）。そのあと足りないところにアルバイトが入ります。</p>'
+    +'<p class="tip">🔁<b>両店舗</b>にした人は、もう一方のお店の予定を見て、同じ時間に重ならないように組まれます。<b>両方のお店で同じ名前で登録</b>してください（名前で同じ人と判断します）。希望の入力は、お店を切り替えてそれぞれで行います。</p>'
     +'<p class="tip">↑↓で並び順を変えられます。この順番が「希望一覧」「印刷したシフト表」にもそのまま反映されます（色は人ごとに固定なので変わりません）。</p>';
 }
 function moveStaff(i,dir){ var j=i+dir; if(j<0||j>=DATA.staff.length)return;
   ensureColors();
   var t=DATA.staff[i]; DATA.staff[i]=DATA.staff[j]; DATA.staff[j]=t; save(); render(); }
-var CONDPOS=[];
+var CONDPOS=[], CONDEMP=0, CONDBOTH=0;
 function openCond(sid){ var s=staffBy(sid); if(!s)return;
-  CONDPOS=(s.pos||[]).slice();
+  CONDPOS=(s.pos||[]).slice(); CONDEMP=s.emp?1:0; CONDBOTH=s.both?1:0;
   el("sheet").innerHTML='<h3>'+esc(s.name)+'さんの条件</h3>'
+   +'<div class="frow" style="margin-bottom:2px">はたらき方：</div>'
+   +'<div class="pgrid" id="cnd_emp"></div>'
+   +'<p class="tip" id="cnd_emphint"></p>'
    +'<div class="frow">基本の勤務可能時間：<input type="time" id="cnd_f" value="'+esc(s.avF||"")+'"> 〜 <input type="time" id="cnd_t" value="'+esc(s.avT||"")+'"></div>'
    +'<p class="tip">空欄＝いつでも可。例：学校がある人は 17:00〜23:00。日ごとの「時間指定」があればそちらが優先されます。</p>'
    +'<div class="frow">週の希望回数：<input type="number" id="cnd_w" min="0" max="7" style="width:70px" value="'+(s.wk||"")+'"> 回くらいまで</div>'
@@ -777,9 +854,22 @@ function openCond(sid){ var s=staffBy(sid); if(!s)return;
    +'<p class="tip" id="cnd_poshint"></p>'
    +'<div class="addrow" style="margin-top:8px"><button onclick="saveCond(\''+sid+'\')">保存</button></div>'
    +'<div style="text-align:center;margin-top:10px"><button class="linkbtn" onclick="closeSheet()">閉じる</button></div>';
-  renderCondPos();
+  renderCondEmp(); renderCondPos();
   el("mask").classList.add("on");
 }
+/* 社員／アルバイト・両店舗兼務の切り替え */
+function renderCondEmp(){
+  var g=el("cnd_emp"); if(!g)return;
+  g.innerHTML='<button class="pchip'+(CONDEMP?' on':'')+'" onclick="setCondEmp(1)">👔 社員</button>'
+    +'<button class="pchip'+(CONDEMP?'':' on')+'" onclick="setCondEmp(0)">アルバイト</button>'
+    +'<button class="pchip'+(CONDBOTH?' on':'')+'" onclick="toggleCondBoth()">🔁 両店舗で働く</button>';
+  el("cnd_emphint").innerHTML=(CONDEMP
+    ? '<b>社員</b>＝自動作成でいちばん先に、できるだけ長い1本の帯で入れます。足りないところにアルバイトが入ります。（日ごとの「休み」「時間指定」は今までどおり守ります）'
+    : '<b>アルバイト</b>＝社員を入れたあと、足りないところに入ります。')
+    +(CONDBOTH?'<br>🔁 '+esc(otherShops().map(function(x){return x.name;}).join("・"))+'でも働く人。<b>両方のお店で同じ名前で登録</b>してください。もう一方のお店で入っている時間には、自動作成で入れません（手で入れると⚠が出ます）。':'');
+}
+function setCondEmp(v){ CONDEMP=v?1:0; renderCondEmp(); }
+function toggleCondBoth(){ CONDBOTH=CONDBOTH?0:1; renderCondEmp(); }
 function renderCondPos(){
   var g=el("cnd_pos"); if(!g)return;
   g.innerHTML=POS.map(function(p){
@@ -795,7 +885,8 @@ function saveCond(sid){ var s=staffBy(sid); if(!s)return;
   s.avF=el("cnd_f").value||""; s.avT=el("cnd_t").value||"";
   var w=parseInt(el("cnd_w").value,10); s.wk=(isNaN(w)||w<=0)?0:w;
   s.pos=(CONDPOS.length===POS.length)?[]:CONDPOS.slice();  /* 全部選んだ＝制限なしと同じ */
-  save(); closeSheet(); toast("条件を保存しました"); render(); }
+  s.emp=CONDEMP?1:0; s.both=CONDBOTH?1:0;
+  save(); closeSheet(); toast("条件を保存しました"); loadOther(); render(); }
 function addStaff(){ var v=el("newname").value.trim(); if(!v)return; DATA.staff.push({id:uid(),name:v,pos:[]}); ensureColors(); save(); render(); }
 function delStaff(id){ if(!confirm("削除しますか？（希望データも消えます）"))return; DATA.staff=DATA.staff.filter(function(s){return s.id!==id;}); delete DATA.req[id]; delete DATA.submitted[id]; save(); render(); }
 
