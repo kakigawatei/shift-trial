@@ -107,6 +107,11 @@
   .addrow button{ background:var(--g); color:#fff; border:0; border-radius:10px; padding:0 18px; font-weight:800; }
   .staffrow{ display:flex; justify-content:space-between; align-items:center; padding:10px 4px; border-bottom:1px solid #eef1f5; }
   .staffrow .nm{ font-size:14px; font-weight:800; }
+  .ord{ width:30px; padding:6px 0; border-radius:8px; border:1.5px solid var(--bd); background:#fff; font-size:12px; font-weight:800; color:var(--navy); margin-right:4px; }
+  .ord:disabled{ opacity:.3; }
+  .pgrid{ display:flex; flex-wrap:wrap; gap:6px; margin:6px 0 2px; }
+  .pchip{ font-size:12px; font-weight:800; border-radius:999px; padding:7px 12px; background:#eef2f7; color:#7b8a99; border:1.5px solid #dbe3ec; }
+  .pchip.on{ background:var(--gl); border-color:var(--g); color:var(--g); }
   .del{ color:var(--ng); background:none; border:0; font-size:12px; font-weight:800; }
   .toast{ position:fixed; bottom:100px; left:50%; transform:translateX(-50%); background:#2c3a4d; color:#fff; border-radius:999px; padding:9px 20px; font-size:13px; font-weight:700; opacity:0; transition:.25s; pointer-events:none; z-index:40; }
   .toast.on{ opacity:1; }
@@ -296,18 +301,31 @@ function setTimeQ(sid,day,k,v){ DATA.req[sid]=DATA.req[sid]||{}; var cur=DATA.re
 function asgOf(day){ DATA.asg[day]=DATA.asg[day]||{}; return DATA.asg[day]; }
 function mday(d){ MDAY=Math.max(16,Math.min(31,MDAY+d)); render(); }
 function staffBy(id){ return DATA.staff.filter(function(x){return x.id===id;})[0]; }
-function staffColor(sid){ var i=0; DATA.staff.forEach(function(s,ix){ if(s.id===sid)i=ix; }); return PAL[i%PAL.length]; }
+/* 色は並び替えても変わらないよう、スタッフごとに固定の番号(ci)を持たせる */
+function ensureColors(){ var used={},max=-1;
+  DATA.staff.forEach(function(s){ if(typeof s.ci==="number"){ used[s.ci]=1; if(s.ci>max)max=s.ci; } });
+  DATA.staff.forEach(function(s){ if(typeof s.ci!=="number"){ var n=0; while(used[n])n++; s.ci=n; used[n]=1; } }); }
+function staffColor(sid){ var s=staffBy(sid); if(!s)return PAL[0];
+  if(typeof s.ci!=="number")ensureColors(); return PAL[(s.ci||0)%PAL.length]; }
+/* 対応できるポジション（未設定＝全部できる） */
+function canPos(s,pid){ return !s || !s.pos || !s.pos.length || s.pos.indexOf(pid)>=0; }
+function capCount(sid){ var s=staffBy(sid); return (s&&s.pos&&s.pos.length)?s.pos.length:POS.length; }
+function posLabel(pid){ var p=POS.filter(function(x){return x.id===pid;})[0]; return p?p.label:pid; }
 function closeSheet(){ el("mask").classList.remove("on"); }
 
 /* ---- シフト実体（帯）: DATA.shift[day]=[{id,sid,pos,f,t}] ---- */
 function fmtHM(m){ return ("0"+Math.floor(m/60)).slice(-2)+":"+("0"+(m%60)).slice(-2); }
 function fmtT(m){ var h=Math.floor(m/60),mm=m%60; return mm? h+":"+("0"+mm).slice(-2) : ""+h; }
 function overlapMM(f1,t1,f2,t2){ return f1<t2&&f2<t1; }
-function freePos(day,f,t){
+/* その時間に空いているポジションを返す。その人が対応できるポジションを優先する */
+function freePos(list,f,t,sid){
+  var s=sid?staffBy(sid):null, last=null;
   for(var i=0;i<POS.length;i++){ var pid=POS[i].id;
-    var used=(DATA.shift[day]||[]).some(function(e){ return e.pos===pid&&overlapMM(minutes(e.f),minutes(e.t),f,t); });
+    if(s&&!canPos(s,pid))continue;
+    last=pid;
+    var used=(list||[]).some(function(e){ return e.pos===pid&&overlapMM(minutes(e.f),minutes(e.t),f,t); });
     if(!used) return pid; }
-  return POS[POS.length-1].id; }
+  return last||POS[POS.length-1].id; }
 function shiftOf(day){
   DATA.shift=DATA.shift||{};
   if(!DATA.shift[day]){
@@ -324,7 +342,7 @@ function shiftOf(day){
           if(cur&&f<=cur.t){ cur.t=Math.max(cur.t,t); } else { if(cur)ents.push(cur); cur={sid:sid,f:f,t:t}; } });
         if(cur)ents.push(cur); });
       ents.sort(function(x,y){return x.f-y.f||y.t-x.t;});
-      ents.forEach(function(e){ DATA.shift[day].push({id:uid(),sid:e.sid,pos:freePos(day,e.f,e.t),f:fmtHM(e.f),t:fmtHM(e.t)}); });
+      ents.forEach(function(e){ DATA.shift[day].push({id:uid(),sid:e.sid,pos:freePos(DATA.shift[day],e.f,e.t,e.sid),f:fmtHM(e.f),t:fmtHM(e.t)}); });
     }
   }
   return DATA.shift[day];
@@ -344,7 +362,7 @@ function mgrBoard(){
       var s=staffBy(e.sid); if(!s)return "";
       var f=minutes(e.f),t=minutes(e.t);
       var L=(f-DAY_OPEN)/(DAY_CLOSE-DAY_OPEN)*100, W2=(t-f)/(DAY_CLOSE-DAY_OPEN)*100;
-      var warn=!fitsReq(e.sid,MDAY,f,t)||hasDup(MDAY,e);
+      var warn=!fitsReq(e.sid,MDAY,f,t)||hasDup(MDAY,e)||!canPos(s,e.pos);
       return '<div class="gband'+(warn?' warn':'')+'" style="left:'+L.toFixed(2)+'%;width:'+W2.toFixed(2)+'%;background:'+staffColor(e.sid)+'" onclick="event.stopPropagation();openEnt('+MDAY+',\''+e.id+'\')">'+esc(s.name)+(warn?'⚠':'')+'</div>';
     }).join("");
     return '<div class="grow"><div class="glabel">'+p.label+'</div><div class="gtrack" onclick="trackTap(event,\''+p.id+'\')">'+bands+'</div></div>';
@@ -356,7 +374,7 @@ function mgrBoard(){
   var totalMin=0; ents.forEach(function(e){ totalMin+=minutes(e.t)-minutes(e.f); });
   var sum='<div class="gsum"><span>のべ '+(Math.round(totalMin/6)/10)+'時間</span><span>概算人件費 ¥'+Math.round(totalMin/60*WAGE).toLocaleString()+'（時給'+WAGE.toLocaleString()+'円換算）</span></div>';
   return nav+bar+'<div class="gantt"><div class="gsc"><div class="gin">'+head+rows+needs+'</div></div>'+sum+'</div>'
-   +'<p class="tip">帯をタップ＝編集、あいている場所をタップ＝その位置に追加。下の数字は「入っている人数／必要人数」（赤＝不足）。⚠＝希望・条件と合わないか、同じ人が重なっています。</p>';
+   +'<p class="tip">帯をタップ＝編集、あいている場所をタップ＝その位置に追加。下の数字は「入っている人数／必要人数」（赤＝不足）。⚠＝希望・条件と合わない／同じ人が重なっている／そのポジションを担当できない人が入っています。</p>';
 }
 function trackTap(ev,pos){ var r=ev.currentTarget.getBoundingClientRect();
   var frac=(ev.clientX-r.left)/r.width;
@@ -371,16 +389,22 @@ function openEnt(day,eid,posDef,fDef){
   var t=e?e.t:fmtHM(Math.min(minutes(f)+240,DAY_CLOSE));
   var sopts='<option value="">選んでください</option>'+DATA.staff.map(function(s){
     return '<option value="'+s.id+'"'+(e&&e.sid===s.id?' selected':'')+'>'+esc(s.name)+'（希望'+reqLabel(s.id,day)+'）</option>'; }).join("");
-  var popts=POS.map(function(p){ return '<option value="'+p.id+'"'+((e?e.pos:posDef||"p1")===p.id?' selected':'')+'>'+p.label+'</option>'; }).join("");
   el("sheet").innerHTML='<h3>8/'+day+'（'+WD[wday(day)]+'）　シフトの'+(e?'編集':'追加')+'</h3>'
-   +'<div class="frow">だれ：<select id="ent_s">'+sopts+'</select></div>'
-   +'<div class="frow">どこ：<select id="ent_p">'+popts+'</select></div>'
+   +'<div class="frow">だれ：<select id="ent_s" onchange="posOpts()">'+sopts+'</select></div>'
+   +'<div class="frow">どこ：<select id="ent_p">'+posOptsHtml(e?e.sid:"",e?e.pos:(posDef||"p1"))+'</select></div>'
    +'<div class="frow">時間：<select id="ent_f">'+timeOpts(f)+'</select> 〜 <select id="ent_t">'+timeOpts(t)+'</select></div>'
    +'<div class="addrow" style="margin-top:14px"><button onclick="saveEnt('+day+','+(e?"'"+e.id+"'":'null')+')">保存</button>'
    +(e?'<button style="background:var(--ngbg);color:var(--ng)" onclick="delEnt('+day+',\''+e.id+'\')">削除</button>':'')
    +'</div><div style="text-align:center;margin-top:10px"><button class="linkbtn" onclick="closeSheet()">閉じる</button></div>';
   el("mask").classList.add("on");
 }
+/* ポジション選択肢：その人が担当できないポジションには印を付ける */
+function posOptsHtml(sid,sel){ var s=sid?staffBy(sid):null;
+  return POS.map(function(p){ var ng=s&&!canPos(s,p.id);
+    return '<option value="'+p.id+'"'+(p.id===sel?' selected':'')+'>'+p.label+(ng?'（対応外）':'')+'</option>'; }).join(""); }
+function posOpts(){ var sel=el("ent_p"), cur=sel?sel.value:""; if(!sel)return;
+  sel.innerHTML=posOptsHtml(el("ent_s").value,cur); }
+
 function saveEnt(day,eid){
   var sid=el("ent_s").value, pos=el("ent_p").value, f=el("ent_f").value, t=el("ent_t").value;
   if(!sid){ toast("スタッフを選んでください"); return; }
@@ -388,6 +412,7 @@ function saveEnt(day,eid){
   var ents=shiftOf(day);
   if(eid){ var e=ents.filter(function(x){return x.id===eid;})[0]; if(e){ e.sid=sid; e.pos=pos; e.f=f; e.t=t; } }
   else ents.push({id:uid(),sid:sid,pos:pos,f:f,t:t});
+  if(!canPos(staffBy(sid),pos)) toast("※このポジションは担当外で登録しました（⚠表示）");
   save(); closeSheet(); render();
 }
 function delEnt(day,eid){ DATA.shift[day]=shiftOf(day).filter(function(x){return x.id!==eid;}); save(); closeSheet(); render(); }
@@ -416,37 +441,76 @@ function autoDraft(){
   });
   Object.keys(act).forEach(function(sid){ out.push({sid:sid,f:act[sid].f,t:act[sid].t}); });
   out.sort(function(x,y){return x.f-y.f||y.t-x.t;});
-  out.forEach(function(e){ DATA.shift[MDAY].push({id:uid(),sid:e.sid,pos:freePos(MDAY,e.f,e.t),f:fmtHM(e.f),t:fmtHM(e.t)}); });
-  save(); toast("下書きを作成しました"); render();
+  /* ポジション決め：担当できるポジションが少ない人から先に埋める（融通のきく人を後回しに） */
+  var placed=[], ng=0;
+  out.map(function(e,i){ return i; })
+     .sort(function(a,b){ return capCount(out[a].sid)-capCount(out[b].sid); })
+     .forEach(function(i){ var e=out[i];
+       e.pos=freePos(placed,e.f,e.t,e.sid);
+       if(!canPos(staffBy(e.sid),e.pos))ng++;
+       placed.push({pos:e.pos,f:fmtHM(e.f),t:fmtHM(e.t)}); });
+  out.forEach(function(e){ DATA.shift[MDAY].push({id:uid(),sid:e.sid,pos:e.pos,f:fmtHM(e.f),t:fmtHM(e.t)}); });
+  save(); toast(ng?"下書きを作成しました（⚠"+ng+"件は担当できるポジションが空いていません）":"下書きを作成しました"); render();
 }
 
 /* スタッフ管理＋条件設定 */
 function mgrStaff(){
+  ensureColors();
+  var n=DATA.staff.length;
   var rows=DATA.staff.map(function(s,i){
     var cond=[]; if(s.avF||s.avT)cond.push((s.avF||"開店")+"〜"+(s.avT||"閉店")); if(s.wk)cond.push("週"+s.wk+"回");
-    return '<div class="staffrow"><span class="nm"><span class="dot" style="background:'+PAL[i%PAL.length]+'"></span>'+esc(s.name)
-      +(cond.length?'<br><span class="mini">'+cond.join("・")+'</span>':'')+'</span>'
-      +'<span style="white-space:nowrap"><button class="cfg" onclick="openCond(\''+s.id+'\')">条件</button><button class="del" onclick="delStaff(\''+s.id+'\')">削除</button></span></div>';
+    if(s.pos&&s.pos.length&&s.pos.length<POS.length){
+      var nm=s.pos.slice(0,3).map(posLabel).join("・");
+      cond.push(nm+(s.pos.length>3?"他"+(s.pos.length-3):""));
+    }
+    return '<div class="staffrow"><span class="nm"><span class="dot" style="background:'+staffColor(s.id)+'"></span>'+esc(s.name)
+      +(cond.length?'<br><span class="mini">'+esc(cond.join("／"))+'</span>':'')+'</span>'
+      +'<span style="white-space:nowrap">'
+      +'<button class="ord" onclick="moveStaff('+i+',-1)"'+(i===0?' disabled':'')+'>↑</button>'
+      +'<button class="ord" onclick="moveStaff('+i+',1)"'+(i===n-1?' disabled':'')+'>↓</button>'
+      +'<button class="cfg" onclick="openCond(\''+s.id+'\')">条件</button><button class="del" onclick="delStaff(\''+s.id+'\')">削除</button></span></div>';
   }).join("");
   return '<div class="card">'+(rows||'<p class="tip">タップして最初のスタッフを追加してください。</p>')
     +'<div class="addrow"><input id="newname" placeholder="スタッフの名前"><button onclick="addStaff()">追加</button></div></div>'
-    +'<p class="tip">「条件」＝その人の基本の勤務可能時間と週の回数。設定すると「出られる」の日はその時間内でだけシフトが組まれ、自動作成も回数を守ろうとします。</p>';
+    +'<p class="tip">「条件」＝基本の勤務可能時間・週の回数・<b>できるポジション</b>。設定すると「出られる」の日はその時間内でだけ組まれ、自動作成も回数と担当できるポジションを守ろうとします。</p>'
+    +'<p class="tip">↑↓で並び順を変えられます。この順番が「希望一覧」「印刷したシフト表」にもそのまま反映されます（色は人ごとに固定なので変わりません）。</p>';
 }
+function moveStaff(i,dir){ var j=i+dir; if(j<0||j>=DATA.staff.length)return;
+  ensureColors();
+  var t=DATA.staff[i]; DATA.staff[i]=DATA.staff[j]; DATA.staff[j]=t; save(); render(); }
+var CONDPOS=[];
 function openCond(sid){ var s=staffBy(sid); if(!s)return;
+  CONDPOS=(s.pos||[]).slice();
   el("sheet").innerHTML='<h3>'+esc(s.name)+'さんの条件</h3>'
    +'<div class="frow">基本の勤務可能時間：<input type="time" id="cnd_f" value="'+esc(s.avF||"")+'"> 〜 <input type="time" id="cnd_t" value="'+esc(s.avT||"")+'"></div>'
    +'<p class="tip">空欄＝いつでも可。例：学校がある人は 17:00〜23:00。日ごとの「時間指定」があればそちらが優先されます。</p>'
    +'<div class="frow">週の希望回数：<input type="number" id="cnd_w" min="0" max="7" style="width:70px" value="'+(s.wk||"")+'"> 回くらいまで</div>'
    +'<p class="tip">空欄＝指定なし。自動作成がこの回数を超えないように組もうとします。</p>'
+   +'<div class="frow" style="margin-bottom:0">できるポジション：</div>'
+   +'<div class="pgrid" id="cnd_pos"></div>'
+   +'<p class="tip" id="cnd_poshint"></p>'
    +'<div class="addrow" style="margin-top:8px"><button onclick="saveCond(\''+sid+'\')">保存</button></div>'
    +'<div style="text-align:center;margin-top:10px"><button class="linkbtn" onclick="closeSheet()">閉じる</button></div>';
+  renderCondPos();
   el("mask").classList.add("on");
 }
+function renderCondPos(){
+  var g=el("cnd_pos"); if(!g)return;
+  g.innerHTML=POS.map(function(p){
+    return '<button class="pchip'+(CONDPOS.indexOf(p.id)>=0?' on':'')+'" onclick="toggleCondPos(\''+p.id+'\')">'+p.label+'</button>'; }).join("")
+    +(CONDPOS.length?'<button class="pchip" onclick="clearCondPos()">ぜんぶ解除</button>':'');
+  el("cnd_poshint").innerHTML=CONDPOS.length
+    ? '選んだ'+CONDPOS.length+'つのポジションだけに入ります。自動作成もここを守ります（手で入れることは可能・その場合⚠が出ます）。'
+    : '<b>何も選ばない＝どのポジションもできる</b>という意味です。新しく入った人など、できる場所が決まっている人だけ選んでください。';
+}
+function toggleCondPos(pid){ var i=CONDPOS.indexOf(pid); if(i>=0)CONDPOS.splice(i,1); else CONDPOS.push(pid); renderCondPos(); }
+function clearCondPos(){ CONDPOS=[]; renderCondPos(); }
 function saveCond(sid){ var s=staffBy(sid); if(!s)return;
   s.avF=el("cnd_f").value||""; s.avT=el("cnd_t").value||"";
   var w=parseInt(el("cnd_w").value,10); s.wk=(isNaN(w)||w<=0)?0:w;
+  s.pos=(CONDPOS.length===POS.length)?[]:CONDPOS.slice();  /* 全部選んだ＝制限なしと同じ */
   save(); closeSheet(); toast("条件を保存しました"); render(); }
-function addStaff(){ var v=el("newname").value.trim(); if(!v)return; DATA.staff.push({id:uid(),name:v}); save(); render(); }
+function addStaff(){ var v=el("newname").value.trim(); if(!v)return; DATA.staff.push({id:uid(),name:v,pos:[]}); ensureColors(); save(); render(); }
 function delStaff(id){ if(!confirm("削除しますか？（希望データも消えます）"))return; DATA.staff=DATA.staff.filter(function(s){return s.id!==id;}); delete DATA.req[id]; delete DATA.submitted[id]; save(); render(); }
 
 /* 印刷ビュー（元のExcel様式に近い：スタッフ×日で時刻レンジ） */
@@ -470,6 +534,7 @@ function renderPrint(){
 
 /* ---- 起動 ---- */
 try{ var c=localStorage.getItem("st_cache"); if(c)DATA=Object.assign(DATA,JSON.parse(c)); }catch(e){}
+ensureColors();
 render();
 pull().then(render);
 setInterval(function(){ if(!el("mask").classList.contains("on")) pull(); }, 25000);
