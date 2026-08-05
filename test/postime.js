@@ -75,7 +75,9 @@ sec("2. 自動作成でランチの時間にドリンク／ホールが入らな
 sec("3. 変更前は困りごとが起きていたことの確認（比較）");
 {
   const cp = require("child_process"), path = require("path"), vm = require("vm");
-  const OLD = cp.execSync("git show HEAD:index.html", { cwd: path.join(__dirname, ".."), maxBuffer: 1 << 24 }).toString("utf8");
+  /* 「ポジションの時間設定」を入れる前のバージョンを指定して比べる。
+     HEAD だとコミットするたび比較相手がずれてしまうのでコミットIDで固定する */
+  const OLD = cp.execSync("git show 9a863c2:index.html", { cwd: path.join(__dirname, ".."), maxBuffer: 1 << 24 }).toString("utf8");
   const CODE = OLD.match(/<script>([\s\S]*?)<\/script>/)[1];
   const m = {}, els = {};
   const mkEl = (id) => ({ id, innerHTML: "", textContent: "", classList: { _s: new Set(), add() {}, remove() {}, contains: () => false } });

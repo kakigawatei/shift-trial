@@ -232,6 +232,10 @@ function bandKey(pid,k){
 function bandOf(pid,day){ return bandKey(pid,dkey(day)); }
 /* その時間はそのポジションを使う時間帯と重なっているか（まったく重ならない＝入れてはいけない） */
 function fitsPos(pid,day,f,t){ var b=bandOf(pid,day); return !b||(f<b[1]&&b[0]<t); }
+/* すでに人が入っているポジションを避ける重み。「終日ポジション」の基準点(720)より大きく、
+   「時間帯とまったく重ならない」(1e6)よりはずっと小さいので、
+   空いているポジションを優先しつつ、時間帯から外れた場所に回すことはありません */
+var USED_PEN=900;
 /* ポジションの時間帯とのはまり具合を点数にする（大きいほど良い）。時間帯なし＝どこでも可の基準点 */
 function posScore(pid,day,f,t){ var b=bandOf(pid,day);
   if(!b) return -720;
@@ -482,12 +486,17 @@ function freePos(list,f,t,sid,day){
   var able=cand.filter(function(p){ return canPos(s,p.id); }); if(!able.length)able=cand;
   var free=able.filter(function(p){ return !(list||[]).some(function(e){ return e.pos===p.id&&overlapMM(minutes(e.f),minutes(e.t),f,t); }); });
   var pick=free.length?free:able; if(!pick.length)return POS[POS.length-1].id;
+  /* まだ誰も入っていないポジションを数える（同じポジションに何人も細切れで入るのを避けるため） */
+  var nUsed={}; (list||[]).forEach(function(e){ nUsed[e.pos]=(nUsed[e.pos]||0)+1; });
   if(day!=null){ var best=null, bs=-1e9;
     pick.forEach(function(p){
       /* ポジションの時間帯に合うものを選ぶ。時間帯とまったく重ならないポジションは選ばない
          （例：ランチの時間にドリンクへ入れてしまうのを防ぐ）。
          時間帯を決めていないポジションは従来どおり「上から順に空いている場所」 */
       var sc=posScore(p.id,day,f,t);
+      /* 空いているポジションがあるなら、すでに人が入っているポジションより優先する。
+         （時間帯の合い具合のほうが大事なので、大きく外れる場所には回さない程度の重みにする） */
+      sc-=(nUsed[p.id]||0)*USED_PEN;
       if(sc>bs){ bs=sc; best=p; } });
     if(best) return best.id; }
   return pick[0].id; }
@@ -516,6 +525,17 @@ function shiftOf(day){
 function needAt(m,day){ var a=needsFor(day), i=Math.floor((m-DAY_OPEN)/60);
   return (i>=0&&i<a.length)?(a[i]||0):0; }
 function hasDup(day,e){ return shiftOf(day).some(function(o){ return o.id!==e.id&&o.sid===e.sid&&overlapMM(minutes(o.f),minutes(o.t),minutes(e.f),minutes(e.t)); }); }
+/* 同じポジションの同じ時間に他の人も入っている（1つのポジションには1人が基本） */
+function posDup(day,e){ return shiftOf(day).some(function(o){ return o.id!==e.id&&o.pos===e.pos&&overlapMM(minutes(o.f),minutes(o.t),minutes(e.f),minutes(e.t)); }); }
+/* 同じポジションで時間が重なる帯を上下の段に振り分ける（重ねて描くと下の帯が見えなくなるため）。
+   開始の早い順に見て、いちばん上の「空いている段」に置く */
+function lanesOf(list){
+  var end=[], lane=[];
+  list.forEach(function(e){ var f=minutes(e.f), i=0;
+    while(i<end.length&&end[i]>f) i++;
+    if(i===end.length) end.push(0);
+    end[i]=minutes(e.t); lane.push(i); });
+  return { lane:lane, n:Math.max(1,end.length) }; }
 
 /* シフト作成（ガントチャート型ボード） */
 function mgrBoard(){
@@ -533,14 +553,20 @@ function mgrBoard(){
   var rows=show.map(function(p){
     var band=bandOf(p.id,MDAY);
     var guide=band? '<div class="gguide" style="left:'+((band[0]-DAY_OPEN)/span*100).toFixed(2)+'%;width:'+((band[1]-band[0])/span*100).toFixed(2)+'%"></div>' : '';
-    var bands=ents.filter(function(e){return e.pos===p.id;}).map(function(e){
+    /* 同じ時間に2人以上入っているときは段に分けて、全員の色帯が必ず見えるようにする */
+    var mine=ents.filter(function(e){return e.pos===p.id;})
+                 .sort(function(x,y){ return minutes(x.f)-minutes(y.f)||minutes(x.t)-minutes(y.t); });
+    var lz=lanesOf(mine), LN=lz.n;
+    var rowH=LN>1?(22*LN+8):30, bh=(rowH-6)/LN-(LN>1?1:0);
+    var bands=mine.map(function(e,ix){
       var s=staffBy(e.sid); if(!s)return "";
       var f=minutes(e.f),t=minutes(e.t);
       var L=(f-DAY_OPEN)/span*100, W2=(t-f)/span*100;
-      var warn=!fitsReq(e.sid,MDAY,f,t)||hasDup(MDAY,e)||!canPos(s,e.pos)||!fitsPos(e.pos,MDAY,f,t);
-      return '<div class="gband'+(warn?' warn':'')+'" style="left:'+L.toFixed(2)+'%;width:'+W2.toFixed(2)+'%;background:'+staffColor(e.sid)+'" onclick="event.stopPropagation();openEnt('+MDAY+',\''+e.id+'\')">'+esc(s.name)+(warn?'⚠':'')+'</div>';
+      var warn=!fitsReq(e.sid,MDAY,f,t)||hasDup(MDAY,e)||!canPos(s,e.pos)||!fitsPos(e.pos,MDAY,f,t)||posDup(MDAY,e);
+      var pos=LN>1?'top:'+(3+lz.lane[ix]*(rowH-6)/LN).toFixed(1)+'px;height:'+bh.toFixed(1)+'px;bottom:auto;':'';
+      return '<div class="gband'+(warn?' warn':'')+'" style="'+pos+'left:'+L.toFixed(2)+'%;width:'+W2.toFixed(2)+'%;background:'+staffColor(e.sid)+'" onclick="event.stopPropagation();openEnt('+MDAY+',\''+e.id+'\')">'+esc(s.name)+(warn?'⚠':'')+'</div>';
     }).join("");
-    return '<div class="grow'+(useId[p.id]?'':' off')+'"><div class="glabel">'+esc(p.label)+(useId[p.id]?'':'<br>(休)')+'</div>'
+    return '<div class="grow'+(useId[p.id]?'':' off')+'"'+(LN>1?' style="height:'+rowH+'px"':'')+'><div class="glabel">'+esc(p.label)+(useId[p.id]?'':'<br>(休)')+'</div>'
       +'<div class="gtrack"'+trk+' onclick="trackTap(event,\''+p.id+'\')">'+guide+bands+'</div></div>';
   }).join("");
   var needs='<div class="gneed"><div class="glabel">必要人数</div><div class="gcells">'+hours.map(function(m){
@@ -552,7 +578,7 @@ function mgrBoard(){
   var sum='<div class="gsum"><span>'+(isHol(MDAY)?"土日祝":"平日")+'の必要 のべ'+needSum+'時間</span><span>のべ '+(Math.round(totalMin/6)/10)+'時間</span>'
     +'<span>概算人件費 ¥'+Math.round(totalMin/60*WAGE).toLocaleString()+'（時給'+WAGE.toLocaleString()+'円換算）</span></div>';
   return nav+bar+'<div class="gantt"><div class="gsc"><div class="gin"'+gin+'>'+head+rows+needs+'</div></div>'+sum+'</div>'
-   +'<p class="tip">帯をタップ＝編集、あいている場所をタップ＝その位置に追加。下の数字は「入っている人数／必要人数」（赤＝不足）。必要人数は'+esc(SHOP.name)+'の'+(isHol(MDAY)?"土日祝":"平日")+'の設定です。うすいグレーの帯＝そのポジションを使う時間（「⏱ ポジションの時間設定」で変えられます）。⚠＝希望・条件と合わない／同じ人が重なっている／そのポジションを担当できない／そのポジションを使う時間から外れています。</p>';
+   +'<p class="tip">帯をタップ＝編集、あいている場所をタップ＝その位置に追加。下の数字は「入っている人数／必要人数」（赤＝不足）。必要人数は'+esc(SHOP.name)+'の'+(isHol(MDAY)?"土日祝":"平日")+'の設定です。うすいグレーの帯＝そのポジションを使う時間（「⏱ ポジションの時間設定」で変えられます）。⚠＝希望・条件と合わない／同じ人が重なっている／そのポジションを担当できない／そのポジションを使う時間から外れている／同じポジションの同じ時間に2人以上入っています（このときは帯を上下2段に分けて表示します）。</p>';
 }
 function trackTap(ev,pos){ var r=ev.currentTarget.getBoundingClientRect();
   var frac=(ev.clientX-r.left)/r.width;
@@ -680,14 +706,17 @@ function autoDraft(){
     if(MAXSH) carry.sort(function(a,b){ return act[b].f-act[a].f; });
     carry.forEach(function(sid){ if(Object.keys(next).length<sl.need&&fitsReq(sid,MDAY,act[sid].f,t)
       &&(!MAXSH||t-act[sid].f<=MAXSH)){ next[sid]=act[sid]; next[sid].t=t; } });
-    /* この枠で上がる人は、同じ日に2回入れないよう候補として後回しにする（上限を設けた店舗のみ） */
+    /* この枠で上がった人は、同じ日にもう一度入れない（上限を設けた店舗のみ）。
+       ここを「後回し」にしていたため、上がった直後の枠でその人がまた選ばれてしまい、
+       それまで働いていた帯が消える／同じ人が細切れに分かれる原因になっていた */
     if(MAXSH) Object.keys(act).forEach(function(sid){ if(!next[sid]) done[sid]=1; });
-    var cands=DATA.staff.filter(function(s){ return !next[s.id]&&fitsReq(s.id,MDAY,f,t); })
-      .sort(function(x,y){ var dx=done[x.id]?1:0, dy=done[y.id]?1:0; if(dx!==dy)return dx-dy;
-        var rx=(days[x.id]||0)/tgt(x), ry=(days[y.id]||0)/tgt(y);
+    var cands=DATA.staff.filter(function(s){ return !next[s.id]&&!done[s.id]&&fitsReq(s.id,MDAY,f,t); })
+      .sort(function(x,y){ var rx=(days[x.id]||0)/tgt(x), ry=(days[y.id]||0)/tgt(y);
         if(rx!==ry)return rx<ry?-1:1; return (minsA[x.id]||0)-(minsA[y.id]||0); });
     while(Object.keys(next).length<sl.need&&cands.length){ var s=cands.shift(); next[s.id]={f:f,t:t}; days[s.id]=(days[s.id]||0)+1; }
-    Object.keys(act).forEach(function(sid){ if(!next[sid])out.push({sid:sid,f:act[sid].f,t:act[sid].t}); });
+    /* 続けて働く人（next に同じ帯が入っている人）以外は、ここで帯を確定させる。
+       「!next[sid]」だと上がった人が同じ枠で入り直したときに帯を取りこぼすので、同じ帯かどうかで見る */
+    Object.keys(act).forEach(function(sid){ if(next[sid]!==act[sid])out.push({sid:sid,f:act[sid].f,t:act[sid].t}); });
     act=next;
   });
   Object.keys(act).forEach(function(sid){ out.push({sid:sid,f:act[sid].f,t:act[sid].t}); });
@@ -701,7 +730,13 @@ function autoDraft(){
        if(!canPos(staffBy(e.sid),e.pos))ng++;
        placed.push({pos:e.pos,f:fmtHM(e.f),t:fmtHM(e.t)}); });
   out.forEach(function(e){ DATA.shift[MDAY].push({id:uid(),sid:e.sid,pos:e.pos,f:fmtHM(e.f),t:fmtHM(e.t)}); });
-  save(); toast(ng?"下書きを作成しました（⚠"+ng+"件は担当できるポジションが空いていません）":"下書きを作成しました"); render();
+  /* 出られる人が足りず必要人数に届かなかった時間を数えて知らせる（黙って埋まったように見せない） */
+  var lack=0; SLOTS.forEach(function(sl){ var m=minutes(sl.from), got=0;
+    out.forEach(function(e){ if(e.f<=m&&m<e.t)got++; }); if(got<sl.need) lack+=sl.need-got; });
+  var msg="下書きを作成しました";
+  if(lack) msg+="（のべ"+lack+"時間ぶん人が足りません・赤い数字の時間）";
+  if(ng) msg+="（⚠"+ng+"件は担当できるポジションが空いていません）";
+  save(); toast(msg); render();
 }
 
 /* スタッフ管理＋条件設定 */
