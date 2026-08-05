@@ -93,6 +93,11 @@
   .frow{ display:flex; align-items:center; gap:8px; margin-bottom:8px; font-size:13px; font-weight:700; flex-wrap:wrap; }
   .frow select,.frow input{ border:1.5px solid var(--bd); border-radius:9px; padding:8px; font-size:14px; background:#fff; }
   .aibar .add{ width:70px; background:#fff; color:var(--g); border:1.5px solid var(--g); border-radius:11px; font-size:12.5px; font-weight:800; }
+  .aibar .ptm{ flex:1; background:#fff; color:var(--navy); border:1.5px solid var(--bd); border-radius:11px; padding:11px 0; font-size:12.5px; font-weight:800; }
+  /* ポジションの時間設定 */
+  .ptrow{ display:flex; align-items:center; gap:5px; padding:8px 2px; border-bottom:1px solid #eef1f5; font-size:13px; font-weight:700; flex-wrap:wrap; }
+  .ptrow .pl{ width:78px; flex:none; font-size:12.5px; font-weight:800; }
+  .ptrow select{ border:1.5px solid var(--bd); border-radius:8px; padding:6px 4px; font-size:13.5px; font-weight:700; background:#fff; }
   /* modal */
   .mask{ position:fixed; inset:0; background:rgba(20,30,45,.45); z-index:20; display:none; align-items:flex-end; justify-content:center; }
   .mask.on{ display:flex; }
@@ -160,7 +165,8 @@ function isHol(day){ var w=wday(day); return w===0||w===6||HOLIDAYS.indexOf(day)
    open/close   … ガントチャートの時間軸（分）
    pos          … ポジション
    needWd/needHd… 開店時刻から1時間ごとの必要人数（平日／土日祝）
-   band         … ポジションの目安の帯（分）。自動作成の配置と、手で追加するときの初期値に使います
+   band         … ポジションを使う時間帯（分）の初期値。店長画面「ポジションの時間設定」で
+                  変更でき、変更した内容は DATA.postime に保存されます（この値より優先）
    off          … その曜日区分では使わないポジション
 */
 var SHOPS=[
@@ -168,14 +174,23 @@ var SHOPS=[
     open:600, close:1380,                                    /* 10:00〜23:00 */
     pos:[
       { id:"p1", label:"仕込①" }, { id:"p2", label:"ランチ①" }, { id:"p3", label:"ランチ②" },
-      { id:"p4", label:"ランチ③" }, { id:"p5", label:"厨房補助" }, { id:"p6", label:"ドリンク" },
+      { id:"p4", label:"ランチ③" }, { id:"p11", label:"厨房" }, { id:"p5", label:"厨房補助" },
+      { id:"p6", label:"ドリンク" },
       { id:"p7", label:"ホール①" }, { id:"p8", label:"ホール②" }, { id:"p9", label:"ホール③" },
       { id:"p10", label:"ホール④" }
     ],
     /* 10時から1時間ごと（従来の時間帯設定をそのまま平日・土日祝の両方に入れています） */
     needWd:[2,3,3,3,2,2,2,2,5,5,5,3,3],
     needHd:[2,3,3,3,2,2,2,2,5,5,5,3,3],
-    band:{}, off:{} },
+    /* ポジションを使う時間帯の初期値（店長が画面から変えられます）。
+       書いていないポジション（厨房・厨房補助）は終日つかえる扱いです */
+    band:{
+      wd:{ p1:[600,900], p2:[660,900], p3:[660,900], p4:[660,900],
+           p6:[1020,1380], p7:[1020,1380], p8:[1020,1380], p9:[1020,1380], p10:[1020,1380] },
+      hd:{ p1:[600,900], p2:[660,900], p3:[660,900], p4:[660,900],
+           p6:[1020,1380], p7:[1020,1380], p8:[1020,1380], p9:[1020,1380], p10:[1020,1380] }
+    },
+    off:{} },
   { id:"ochiai", name:"落合", doc:"shifttrial_ochiai",
     open:300, close:1260,                                    /* 5:00〜21:00 */
     pos:[
@@ -206,7 +221,23 @@ function applyShop(id){ var s=shopBy(id); if(!s)return false;
 /* 曜日区分ごとの必要人数・目安の帯・使わないポジション */
 function dkey(day){ return isHol(day)?"hd":"wd"; }
 function needsFor(day){ return (dkey(day)==="hd"? SHOP.needHd : SHOP.needWd)||[]; }
-function bandOf(pid,day){ var b=(SHOP.band||{})[dkey(day)]; return (b&&b[pid])||null; }
+/* ポジションを使う時間帯。店長が画面で設定した内容（DATA.postime）を最優先、
+   なければ店舗の初期値（SHOP.band）、それも無ければ null＝終日つかえる。
+   DATA.postime[区分][ポジション] が 0 のときは「終日」を明示した状態 */
+function bandKey(pid,k){
+  var pt=(DATA.postime||{})[k];
+  if(pt&&Object.prototype.hasOwnProperty.call(pt,pid)){ var v=pt[pid];
+    return (v&&v.length===2&&v[0]<v[1])?[v[0],v[1]]:null; }
+  var b=(SHOP.band||{})[k]; return (b&&b[pid])?[b[pid][0],b[pid][1]]:null; }
+function bandOf(pid,day){ return bandKey(pid,dkey(day)); }
+/* その時間はそのポジションを使う時間帯と重なっているか（まったく重ならない＝入れてはいけない） */
+function fitsPos(pid,day,f,t){ var b=bandOf(pid,day); return !b||(f<b[1]&&b[0]<t); }
+/* ポジションの時間帯とのはまり具合を点数にする（大きいほど良い）。時間帯なし＝どこでも可の基準点 */
+function posScore(pid,day,f,t){ var b=bandOf(pid,day);
+  if(!b) return -720;
+  if(t<=b[0]||b[1]<=f) return -1e6;                       /* まったく重ならない */
+  var over=Math.max(0,b[0]-f)+Math.max(0,t-b[1]);         /* はみ出した分 */
+  return -over*5-(Math.abs(b[0]-f)+Math.abs(b[1]-t))/60; }
 function posFor(day){ var off=(SHOP.off||{})[dkey(day)]||[];
   return POS.filter(function(p){ return off.indexOf(p.id)<0; }); }
 /* 必要人数を1時間ずつの枠にする（自動作成はこれを順に埋めていく） */
@@ -452,10 +483,11 @@ function freePos(list,f,t,sid,day){
   var free=able.filter(function(p){ return !(list||[]).some(function(e){ return e.pos===p.id&&overlapMM(minutes(e.f),minutes(e.t),f,t); }); });
   var pick=free.length?free:able; if(!pick.length)return POS[POS.length-1].id;
   if(day!=null){ var best=null, bs=-1e9;
-    pick.forEach(function(p){ var b=bandOf(p.id,day);
-      /* 目安の帯に「時間の形が近い」ものを選ぶ（始まりの時刻を重めに見る）。
-         帯を持たない店舗（おはし二日町）は全部同じ点数＝従来どおり「上から順に空いている場所」 */
-      var sc=b ? -(2*Math.abs(b[0]-f)+Math.abs(b[1]-t)) : -720;
+    pick.forEach(function(p){
+      /* ポジションの時間帯に合うものを選ぶ。時間帯とまったく重ならないポジションは選ばない
+         （例：ランチの時間にドリンクへ入れてしまうのを防ぐ）。
+         時間帯を決めていないポジションは従来どおり「上から順に空いている場所」 */
+      var sc=posScore(p.id,day,f,t);
       if(sc>bs){ bs=sc; best=p; } });
     if(best) return best.id; }
   return pick[0].id; }
@@ -489,7 +521,8 @@ function hasDup(day,e){ return shiftOf(day).some(function(o){ return o.id!==e.id
 function mgrBoard(){
   var w=wday(MDAY), ents=shiftOf(MDAY);
   var nav='<div class="daynav"><button onclick="mday(-1)">‹</button><span class="dl">8/'+MDAY+'（'+WD[w]+'）</span><button onclick="mday(1)">›</button></div>';
-  var bar='<div class="aibar"><button class="gen" onclick="autoDraft()">✨ 下書きを自動作成</button><button class="add" onclick="openEnt('+MDAY+',null)">＋追加</button><button class="prn" onclick="window.print()">🖨 印刷</button></div>';
+  var bar='<div class="aibar"><button class="gen" onclick="autoDraft()">✨ 下書きを自動作成</button><button class="add" onclick="openEnt('+MDAY+',null)">＋追加</button></div>'
+    +'<div class="aibar"><button class="ptm" onclick="openPosTime()">⏱ ポジションの時間設定</button><button class="prn" onclick="window.print()">🖨 印刷</button></div>';
   var hours=[]; for(var m=DAY_OPEN;m<DAY_CLOSE;m+=60)hours.push(m);
   var H=hours.length, span=DAY_CLOSE-DAY_OPEN;
   var gin=' style="min-width:'+(66+H*46)+'px"', trk=' style="background-size:calc(100%/'+H+') 100%"';
@@ -504,7 +537,7 @@ function mgrBoard(){
       var s=staffBy(e.sid); if(!s)return "";
       var f=minutes(e.f),t=minutes(e.t);
       var L=(f-DAY_OPEN)/span*100, W2=(t-f)/span*100;
-      var warn=!fitsReq(e.sid,MDAY,f,t)||hasDup(MDAY,e)||!canPos(s,e.pos);
+      var warn=!fitsReq(e.sid,MDAY,f,t)||hasDup(MDAY,e)||!canPos(s,e.pos)||!fitsPos(e.pos,MDAY,f,t);
       return '<div class="gband'+(warn?' warn':'')+'" style="left:'+L.toFixed(2)+'%;width:'+W2.toFixed(2)+'%;background:'+staffColor(e.sid)+'" onclick="event.stopPropagation();openEnt('+MDAY+',\''+e.id+'\')">'+esc(s.name)+(warn?'⚠':'')+'</div>';
     }).join("");
     return '<div class="grow'+(useId[p.id]?'':' off')+'"><div class="glabel">'+esc(p.label)+(useId[p.id]?'':'<br>(休)')+'</div>'
@@ -519,7 +552,7 @@ function mgrBoard(){
   var sum='<div class="gsum"><span>'+(isHol(MDAY)?"土日祝":"平日")+'の必要 のべ'+needSum+'時間</span><span>のべ '+(Math.round(totalMin/6)/10)+'時間</span>'
     +'<span>概算人件費 ¥'+Math.round(totalMin/60*WAGE).toLocaleString()+'（時給'+WAGE.toLocaleString()+'円換算）</span></div>';
   return nav+bar+'<div class="gantt"><div class="gsc"><div class="gin"'+gin+'>'+head+rows+needs+'</div></div>'+sum+'</div>'
-   +'<p class="tip">帯をタップ＝編集、あいている場所をタップ＝その位置に追加。下の数字は「入っている人数／必要人数」（赤＝不足）。必要人数は'+esc(SHOP.name)+'の'+(isHol(MDAY)?"土日祝":"平日")+'の設定です。うすいグレーの帯＝そのポジションの目安の時間。⚠＝希望・条件と合わない／同じ人が重なっている／そのポジションを担当できない人が入っています。</p>';
+   +'<p class="tip">帯をタップ＝編集、あいている場所をタップ＝その位置に追加。下の数字は「入っている人数／必要人数」（赤＝不足）。必要人数は'+esc(SHOP.name)+'の'+(isHol(MDAY)?"土日祝":"平日")+'の設定です。うすいグレーの帯＝そのポジションを使う時間（「⏱ ポジションの時間設定」で変えられます）。⚠＝希望・条件と合わない／同じ人が重なっている／そのポジションを担当できない／そのポジションを使う時間から外れています。</p>';
 }
 function trackTap(ev,pos){ var r=ev.currentTarget.getBoundingClientRect();
   var frac=(ev.clientX-r.left)/r.width;
@@ -550,9 +583,64 @@ var ENTDAY=null;
 function posOptsHtml(sid,sel,day){ var s=sid?staffBy(sid):null;
   var off=(day==null?[]:((SHOP.off||{})[dkey(day)]||[]));
   return POS.map(function(p){ var ng=s&&!canPos(s,p.id), rest=off.indexOf(p.id)>=0;
-    return '<option value="'+p.id+'"'+(p.id===sel?' selected':'')+'>'+esc(p.label)+(rest?'（'+(isHol(day)?"土日祝":"平日")+'はなし）':'')+(ng?'（対応外）':'')+'</option>'; }).join(""); }
+    var b=(day==null?null:bandOf(p.id,day));
+    return '<option value="'+p.id+'"'+(p.id===sel?' selected':'')+'>'+esc(p.label)
+      +(b?' '+fmtT(b[0])+'〜'+fmtT(b[1]):'')
+      +(rest?'（'+(isHol(day)?"土日祝":"平日")+'はなし）':'')+(ng?'（対応外）':'')+'</option>'; }).join(""); }
 function posOpts(){ var sel=el("ent_p"), cur=sel?sel.value:""; if(!sel)return;
   sel.innerHTML=posOptsHtml(el("ent_s").value,cur,ENTDAY); }
+
+/* ---- ポジションごとの時間設定（店長） ----
+   画面で変えた内容は DATA.postime に保存され、店舗の初期値より優先されます */
+var PTKEY="wd", PTTMP=null;
+function openPosTime(){
+  PTKEY=dkey(MDAY); PTTMP={ wd:{}, hd:{} };
+  ["wd","hd"].forEach(function(k){ POS.forEach(function(p){ PTTMP[k][p.id]=bandKey(p.id,k); }); });
+  renderPosTime(); el("mask").classList.add("on");
+}
+function ptTab(k){ PTKEY=k; renderPosTime(); }
+function ptOpts(sel,from,to){ var o="";
+  for(var m=from;m<=to;m+=30) o+='<option value="'+m+'"'+(m===sel?' selected':'')+'>'+fmtT(m)+'</option>';
+  return o; }
+function ptSet(pid,which,v){
+  var cur=PTTMP[PTKEY][pid];
+  if(which==="f"){
+    if(v===""){ PTTMP[PTKEY][pid]=null; }
+    else { var f=+v; PTTMP[PTKEY][pid]=[f, Math.min(cur?Math.max(cur[1],f+30):DAY_CLOSE, DAY_CLOSE)]; }
+  } else { var f2=cur?cur[0]:DAY_OPEN; PTTMP[PTKEY][pid]=[f2, Math.max(+v, f2+30)]; }
+  renderPosTime();
+}
+function renderPosTime(){
+  var off=(SHOP.off||{})[PTKEY]||[], kn=(PTKEY==="hd"?"土日祝":"平日");
+  var rows=POS.map(function(p){
+    var b=PTTMP[PTKEY][p.id];
+    var f='<select onchange="ptSet(\''+p.id+'\',\'f\',this.value)"><option value=""'+(b?'':' selected')+'>終日</option>'
+      +ptOpts(b?b[0]:-1,DAY_OPEN,DAY_CLOSE-30)+'</select>';
+    var t=b? ' 〜 <select onchange="ptSet(\''+p.id+'\',\'t\',this.value)">'+ptOpts(b[1],b[0]+30,DAY_CLOSE)+'</select>'
+           : ' <span class="mini">いつでも入れます</span>';
+    return '<div class="ptrow"><span class="pl">'+esc(p.label)
+      +(off.indexOf(p.id)>=0?'<br><span class="mini">'+kn+'はなし</span>':'')+'</span>'+f+t+'</div>';
+  }).join("");
+  el("sheet").innerHTML='<h3>ポジションの時間設定（'+esc(SHOP.name)+'）</h3>'
+   +'<div class="tabs"><button class="'+(PTKEY==="wd"?"on":"")+'" onclick="ptTab(\'wd\')">平日</button>'
+   +'<button class="'+(PTKEY==="hd"?"on":"")+'" onclick="ptTab(\'hd\')">土日祝</button></div>'
+   +rows
+   +'<p class="tip">そのポジションを使う時間を決めます。決めておくと、自動作成でその時間の外に入らなくなります（例：ドリンクを17時〜にすると、ランチの時間にドリンクへ入らなくなります）。<b>「終日」＝いつでも入れます。</b>平日と土日祝で別々に決められます。</p>'
+   +'<p class="tip">手で入れることはできますが、その場合はガントチャートに⚠が出ます。</p>'
+   +'<div class="addrow" style="margin-top:8px"><button onclick="savePosTime()">保存</button></div>'
+   +'<div style="text-align:center;margin-top:10px"><button class="linkbtn" onclick="ptResetAll()">最初の設定にもどす</button>'
+   +'　<button class="linkbtn" onclick="closeSheet()">閉じる</button></div>';
+}
+function savePosTime(){
+  DATA.postime=DATA.postime||{};
+  ["wd","hd"].forEach(function(k){ var o=DATA.postime[k]||{};
+    POS.forEach(function(p){ var b=PTTMP[k][p.id]; o[p.id]=b?[b[0],b[1]]:0; });   /* 0＝終日 */
+    DATA.postime[k]=o; });
+  save(); closeSheet(); toast("ポジションの時間を保存しました"); render();
+}
+function ptResetAll(){ if(!confirm("ポジションの時間をお店の最初の設定にもどしますか？"))return;
+  if(DATA.postime){ delete DATA.postime; save(); }
+  openPosTime(); toast("最初の設定にもどしました"); }
 
 function saveEnt(day,eid){
   var sid=el("ent_s").value, pos=el("ent_p").value, f=el("ent_f").value, t=el("ent_t").value;
@@ -562,6 +650,8 @@ function saveEnt(day,eid){
   if(eid){ var e=ents.filter(function(x){return x.id===eid;})[0]; if(e){ e.sid=sid; e.pos=pos; e.f=f; e.t=t; } }
   else ents.push({id:uid(),sid:sid,pos:pos,f:f,t:t});
   if(!canPos(staffBy(sid),pos)) toast("※このポジションは担当外で登録しました（⚠表示）");
+  else if(!fitsPos(pos,day,minutes(f),minutes(t))){ var b=bandOf(pos,day);
+    toast("※"+posLabel(pos)+"は"+fmtT(b[0])+"〜"+fmtT(b[1])+"の時間です（⚠表示）"); }
   save(); closeSheet(); render();
 }
 function delEnt(day,eid){ DATA.shift[day]=shiftOf(day).filter(function(x){return x.id!==eid;}); save(); closeSheet(); render(); }

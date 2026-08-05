@@ -26,8 +26,10 @@ const OLD=load("旧版("+BASE+")",OLDSRC);
 const NEW=load(path.join(__dirname,"..","index.html"));
 NEW.applyShop("ohashi");                       /* 新版：おはし二日町にする */
 
+/* だれが何時から何時まで入るか（＝人の割り当て）は変わってはいけない。
+   どのポジションに置くかは「ポジションごとの時間設定」を入れたので変わってよい */
 function draft(S,day){ S.DATA=seed(); S.ensureColors(); S.MDAY=day; S.autoDraft();
-  return (S.DATA.shift[day]||[]).map(e=>e.sid+"|"+e.pos+"|"+e.f+"|"+e.t).sort(); }
+  return (S.DATA.shift[day]||[]).map(e=>e.sid+"|"+e.f+"|"+e.t).sort(); }
 
 let bad=0;
 for(const day of [16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31]){
@@ -38,7 +40,7 @@ for(const day of [16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31]){
 /* 旧データ(asg)からの引き継ぎも比べる */
 const legacyAsg={17:{s2:["o1","o2","o3"],s6:["o1","o4"],s7:["o1"]}};
 function migrate(S){ S.DATA=seed(); S.DATA.asg=JSON.parse(JSON.stringify(legacyAsg)); S.ensureColors();
-  return S.shiftOf(17).map(e=>e.sid+"|"+e.pos+"|"+e.f+"|"+e.t).sort(); }
+  return S.shiftOf(17).map(e=>e.sid+"|"+e.f+"|"+e.t).sort(); }
 const ma=migrate(OLD), mb=migrate(NEW);
 if(JSON.stringify(ma)!==JSON.stringify(mb)){ bad++; console.log("差分 旧データ引き継ぎ\n  旧:"+JSON.stringify(ma)+"\n  新:"+JSON.stringify(mb)); }
 else console.log("  OK   旧データ(asg)→帯の引き継ぎが旧版と同一: "+JSON.stringify(mb));
