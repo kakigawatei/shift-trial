@@ -168,6 +168,9 @@ function isHol(day){ var w=wday(day); return w===0||w===6||HOLIDAYS.indexOf(day)
    band         … ポジションを使う時間帯（分）の初期値。店長画面「ポジションの時間設定」で
                   変更でき、変更した内容は DATA.postime に保存されます（この値より優先）
    off          … その曜日区分では使わないポジション
+   prio         … ポジションごとの「優先スタッフ」の初期値（①②③…の順）。名前で書きます。
+                  店長画面「👑 ポジションの優先スタッフ」で変更でき、変更した内容は
+                  DATA.prio に保存されます（この値より優先）。まだ登録されていない名前は無視します
 */
 var SHOPS=[
   { id:"ohashi", name:"おはし二日町", doc:"shifttrial_ohashi",
@@ -190,6 +193,10 @@ var SHOPS=[
       hd:{ p1:[600,900], p2:[660,900], p3:[660,900], p4:[660,900],
            p6:[1020,1380], p7:[1020,1380], p8:[1020,1380], p9:[1020,1380], p10:[1020,1380] }
     },
+    /* ランチ①②③は 梅田佳央里・佐藤佳菜・伊藤恵子 の3人を優先（出られる日は先に入ります） */
+    prio:{ p2:["梅田佳央里","佐藤佳菜","伊藤恵子"],
+           p3:["梅田佳央里","佐藤佳菜","伊藤恵子"],
+           p4:["梅田佳央里","佐藤佳菜","伊藤恵子"] },
     off:{} },
   { id:"ochiai", name:"落合", doc:"shifttrial_ochiai",
     open:300, close:1260,                                    /* 5:00〜21:00 */
@@ -208,6 +215,11 @@ var SHOPS=[
       hd:{ p1:[300,570], p2:[360,570], p3:[480,720], p4:[480,840], p5:[480,900],
            p7:[840,1140], p8:[840,1140], p9:[840,1140] }
     },
+    /* オープン＝鈴木勇気／カレーパン＝高橋とき・高橋マユミ・逢坂和也の内1人／
+       外販＝長谷部琉衣→鈴木彩愛→秋山さやか の優先順で1人 */
+    prio:{ p1:["鈴木勇気"],
+           p2:["高橋とき","高橋マユミ","逢坂和也"],
+           p10:["長谷部琉衣","鈴木彩愛","秋山さやか"] },
     off:{ hd:["p10"] },                                      /* 土日祝は外販なし */
     maxShift:360 }                                           /* 自動作成で1人が続けて入る上限（6時間） */
 ];
@@ -236,6 +248,11 @@ function fitsPos(pid,day,f,t){ var b=bandOf(pid,day); return !b||(f<b[1]&&b[0]<t
    「時間帯とまったく重ならない」(1e6)よりはずっと小さいので、
    空いているポジションを優先しつつ、時間帯から外れた場所に回すことはありません */
 var USED_PEN=900;
+/* 優先スタッフを決めたポジションを、そこに指定されていない人が埋めてしまうのを避ける重み。
+   （社員が先に入って、バイトの入るポジションが無くなるのを防ぐための「枠」の考え方）
+   USED_PEN より大きく、「時間帯とまったく重ならない」(1e6)よりはずっと小さいので、
+   どうしても他に空きがないときは今までどおり入ります */
+var PRIO_PEN=1500;
 /* ポジションの時間帯とのはまり具合を点数にする（大きいほど良い）。時間帯なし＝どこでも可の基準点 */
 function posScore(pid,day,f,t){ var b=bandOf(pid,day);
   if(!b) return -720;
@@ -504,6 +521,25 @@ function staffColor(sid){ var s=staffBy(sid); if(!s)return PAL[0];
   if(typeof s.ci!=="number")ensureColors(); return PAL[(s.ci||0)%PAL.length]; }
 /* 対応できるポジション（未設定＝全部できる） */
 function canPos(s,pid){ return !s || !s.pos || !s.pos.length || s.pos.indexOf(pid)>=0; }
+/* ---- ポジションごとの優先スタッフ（①②③…の順） ----
+   店長が画面で決めた内容（DATA.prio）を最優先、決めていなければ店舗の初期値（SHOP.prio・名前で指定）。
+   いなくなった人・まだ登録されていない名前は自動で外して返します */
+function prioOf(pid){
+  var d=DATA.prio;
+  if(d&&Object.prototype.hasOwnProperty.call(d,pid))
+    return (d[pid]||[]).filter(function(sid){ return !!staffBy(sid); });
+  var nm=(SHOP.prio||{})[pid]; if(!nm||!nm.length) return [];
+  var out=[];
+  nm.forEach(function(n){ var k=nrmName(n);
+    var s=(DATA.staff||[]).filter(function(x){ return nrmName(x.name)===k; })[0];
+    if(s&&out.indexOf(s.id)<0) out.push(s.id); });
+  return out;
+}
+/* 優先スタッフが決まっているポジションかどうか */
+function hasPrio(pid){ return prioOf(pid).length>0; }
+function prioRank(pid,sid){ return prioOf(pid).indexOf(sid); }
+var MARU="①②③④⑤⑥⑦⑧⑨⑩";
+function maru(i){ return i<MARU.length? MARU.charAt(i) : "("+(i+1)+")"; }
 function capCount(sid){ var s=staffBy(sid); return (s&&s.pos&&s.pos.length)?s.pos.length:POS.length; }
 function posLabel(pid){ var p=POS.filter(function(x){return x.id===pid;})[0]; return p?p.label:pid; }
 function closeSheet(){ el("mask").classList.remove("on"); }
@@ -531,6 +567,11 @@ function freePos(list,f,t,sid,day){
       /* 空いているポジションがあるなら、すでに人が入っているポジションより優先する。
          （時間帯の合い具合のほうが大事なので、大きく外れる場所には回さない程度の重みにする） */
       sc-=(nUsed[p.id]||0)*USED_PEN;
+      /* 優先スタッフを決めたポジションは、その人のために空けておく。
+         指定されている人は逆に、順位が上ほどそのポジションに入りやすくする */
+      var pr=sid?prioRank(p.id,sid):-1;
+      if(pr>=0) sc+=PRIO_PEN*2-pr;
+      else if(hasPrio(p.id)) sc-=PRIO_PEN;
       if(sc>bs){ bs=sc; best=p; } });
     if(best) return best.id; }
   return pick[0].id; }
@@ -576,7 +617,8 @@ function mgrBoard(){
   var w=wday(MDAY), ents=shiftOf(MDAY);
   var nav='<div class="daynav"><button onclick="mday(-1)">‹</button><span class="dl">8/'+MDAY+'（'+WD[w]+'）</span><button onclick="mday(1)">›</button></div>';
   var bar='<div class="aibar"><button class="gen" onclick="autoDraft()">✨ 下書きを自動作成</button><button class="add" onclick="openEnt('+MDAY+',null)">＋追加</button></div>'
-    +'<div class="aibar"><button class="ptm" onclick="openPosTime()">⏱ ポジションの時間設定</button><button class="prn" onclick="window.print()">🖨 印刷</button></div>';
+    +'<div class="aibar"><button class="ptm" onclick="openPosTime()">⏱ ポジションの時間設定</button><button class="prn" onclick="window.print()">🖨 印刷</button></div>'
+    +'<div class="aibar"><button class="ptm" onclick="openPosPrio()">👑 ポジションの優先スタッフ（①②③）</button></div>';
   var hours=[]; for(var m=DAY_OPEN;m<DAY_CLOSE;m+=60)hours.push(m);
   var H=hours.length, span=DAY_CLOSE-DAY_OPEN;
   var gin=' style="min-width:'+(66+H*46)+'px"', trk=' style="background-size:calc(100%/'+H+') 100%"';
@@ -615,6 +657,12 @@ function mgrBoard(){
   /* 社員（先に配置する人）と、兼務スタッフの他店の予定を知らせる */
   var empNames=DATA.staff.filter(function(s){return s.emp;}).map(function(s){return s.name;});
   var einfo=empNames.length? '<p class="tip">👔 社員：'+esc(empNames.join("・"))+'　…「✨下書きを自動作成」ではこの人たちを先に入れ、足りないところにアルバイトが入ります。</p>' : '';
+  /* ポジションごとの優先スタッフ（①②③）。この日に使うポジションだけ出す */
+  var plines=use.map(function(p){ var l=prioOf(p.id); if(!l.length)return "";
+    return esc(p.label)+'：'+l.map(function(sid,i){ var s=staffBy(sid);
+      var ngd=reqOf(sid,MDAY).s==="ng";
+      return maru(i)+(ngd?'<span style="opacity:.45;text-decoration:line-through">'+esc(s.name)+'</span>':esc(s.name)); }).join(" "); }).filter(Boolean);
+  var pinfo=plines.length? '<p class="tip">👑 優先スタッフ：'+plines.join(' ／ ')+'　…出られる日は①の人から順に、その場所へ先に入ります（1つのポジションに1人・うすい取り消し線＝この日は休み）。</p>' : '';
   var xinfo="";
   if(hasBoth()){
     var lines=DATA.staff.filter(function(s){return s.both;}).map(function(s){
@@ -622,7 +670,7 @@ function mgrBoard(){
     xinfo='<p class="tip">🔁 両店舗のスタッフ：'+(lines.length? 'この日は他のお店で '+lines.join("／")+'　の予定です（自動作成ではこの時間に入れません）。'
       : 'この日は他のお店の予定はありません。')+'</p>';
   }
-  return nav+bar+'<div class="gantt"><div class="gsc"><div class="gin"'+gin+'>'+head+rows+needs+'</div></div>'+sum+'</div>'+einfo+xinfo
+  return nav+bar+'<div class="gantt"><div class="gsc"><div class="gin"'+gin+'>'+head+rows+needs+'</div></div>'+sum+'</div>'+pinfo+einfo+xinfo
    +'<p class="tip">帯をタップ＝編集、あいている場所をタップ＝その位置に追加。下の数字は「入っている人数／必要人数」（赤＝不足）。必要人数は'+esc(SHOP.name)+'の'+(isHol(MDAY)?"土日祝":"平日")+'の設定です。うすいグレーの帯＝そのポジションを使う時間（「⏱ ポジションの時間設定」で変えられます）。⚠＝希望・条件と合わない／同じ人が重なっている／そのポジションを担当できない／そのポジションを使う時間から外れている／同じポジションの同じ時間に2人以上入っています（このときは帯を上下2段に分けて表示します）／他のお店で同じ時間に入っています。</p>';
 }
 function trackTap(ev,pos){ var r=ev.currentTarget.getBoundingClientRect();
@@ -715,6 +763,65 @@ function ptResetAll(){ if(!confirm("ポジションの時間をお店の最初�
   if(DATA.postime){ delete DATA.postime; save(); }
   openPosTime(); toast("最初の設定にもどしました"); }
 
+/* ---- ポジションごとの優先スタッフ（①②③…）（店長） ----
+   「保存」を押すまでは PPTMP の中だけで編集し、保存すると DATA.prio に入ります */
+var PPTMP=null, PPSEL=null;
+function openPosPrio(){
+  PPTMP={}; POS.forEach(function(p){ PPTMP[p.id]=prioOf(p.id).slice(); });
+  PPSEL=null; renderPosPrio(); el("mask").classList.add("on");
+}
+function ppNames(l){ return l.map(function(sid,i){ var s=staffBy(sid);
+  return maru(i)+esc(s?s.name:"?"); }).join(" "); }
+function renderPosPrio(){
+  if(PPSEL) return renderPosPrioEdit();
+  var rows=POS.map(function(p){ var l=PPTMP[p.id]||[];
+    return '<div class="ptrow" onclick="ppEdit(\''+p.id+'\')" style="cursor:pointer">'
+      +'<span class="pl">'+esc(p.label)+'</span>'
+      +'<span style="flex:1;font-size:12.5px;'+(l.length?'':'color:#b6c2d0')+'">'+(l.length?ppNames(l):'指定なし')+'</span>'
+      +'<span class="cfg" style="margin:0">変更</span></div>';
+  }).join("");
+  el("sheet").innerHTML='<h3>ポジションの優先スタッフ（'+esc(SHOP.name)+'）</h3>'
+   +'<p class="tip">そのポジションに<b>先に入れたい人</b>を①②③…の順で決めます。「✨下書きを自動作成」では、①の人がその日出られればその場所に入り、休みなら②の人、その次は③の人…という順で入ります（1つのポジションには1人）。</p>'
+   +'<p class="tip">ここで決めた人以外（社員をふくむ）は、そのポジションをできるだけ<b>空けて</b>ほかの場所に入るので、社員が先に埋めてしまってアルバイトが入れない、ということが起きにくくなります。</p>'
+   +rows
+   +'<div class="addrow" style="margin-top:10px"><button onclick="savePosPrio()">保存</button></div>'
+   +'<div style="text-align:center;margin-top:10px"><button class="linkbtn" onclick="ppResetAll()">最初の設定にもどす</button>'
+   +'　<button class="linkbtn" onclick="closeSheet()">閉じる</button></div>';
+}
+function ppEdit(pid){ PPSEL=pid; renderPosPrio(); }
+function ppBack(){ PPSEL=null; renderPosPrio(); }
+function renderPosPrioEdit(){
+  var pid=PPSEL, l=PPTMP[pid]||[], n=l.length;
+  var sel=l.map(function(sid,i){ var s=staffBy(sid);
+    return '<div class="staffrow"><span class="nm">'+maru(i)+' '+esc(s?s.name:"?")+'</span>'
+      +'<span style="white-space:nowrap">'
+      +'<button class="ord" onclick="ppMove('+i+',-1)"'+(i===0?' disabled':'')+'>↑</button>'
+      +'<button class="ord" onclick="ppMove('+i+',1)"'+(i===n-1?' disabled':'')+'>↓</button>'
+      +'<button class="del" onclick="ppDel('+i+')">はずす</button></span></div>'; }).join("");
+  var rest=DATA.staff.filter(function(s){ return l.indexOf(s.id)<0; });
+  var chips=rest.map(function(s){
+    return '<button class="pchip" onclick="ppAdd(\''+s.id+'\')">'+(s.emp?'👔':'')+esc(s.name)+'</button>'; }).join("");
+  el("sheet").innerHTML='<h3>'+esc(posLabel(pid))+'　の優先スタッフ</h3>'
+   +(sel||'<p class="tip">まだ決めていません。下から選んでください。</p>')
+   +'<div class="frow" style="margin:10px 0 0">追加する人をタップ：</div>'
+   +'<div class="pgrid">'+(chips||'<span class="mini">'+(DATA.staff.length?'全員えらび終わりました':'先に「スタッフ」タブで登録してください')+'</span>')+'</div>'
+   +'<p class="tip">上にある人ほど優先されます（↑↓で入れかえ）。その日に休み・時間が合わない人はとばして、次の人が入ります。</p>'
+   +'<div class="addrow" style="margin-top:8px"><button onclick="ppBack()">この内容でもどる</button></div>'
+   +'<p class="tip" style="text-align:center">※ 最後に一覧の「保存」を押すと決定されます</p>';
+}
+function ppAdd(sid){ var l=PPTMP[PPSEL]; if(l.indexOf(sid)<0)l.push(sid); renderPosPrio(); }
+function ppDel(i){ PPTMP[PPSEL].splice(i,1); renderPosPrio(); }
+function ppMove(i,dir){ var l=PPTMP[PPSEL], j=i+dir; if(j<0||j>=l.length)return;
+  var t=l[i]; l[i]=l[j]; l[j]=t; renderPosPrio(); }
+function savePosPrio(){
+  DATA.prio=DATA.prio||{};
+  POS.forEach(function(p){ DATA.prio[p.id]=(PPTMP[p.id]||[]).slice(); });
+  save(); closeSheet(); toast("優先スタッフを保存しました"); render();
+}
+function ppResetAll(){ if(!confirm("優先スタッフをお店の最初の設定にもどしますか？"))return;
+  if(DATA.prio){ delete DATA.prio; save(); }
+  openPosPrio(); toast("最初の設定にもどしました"); }
+
 function saveEnt(day,eid){
   var sid=el("ent_s").value, pos=el("ent_p").value, f=el("ent_f").value, t=el("ent_t").value;
   if(!sid){ toast("スタッフを選んでください"); return; }
@@ -757,20 +864,42 @@ function autoDraft(){
      その日の回数は1回だけ数える（アルバイトの数え方は従来どおり変えない） */
   function startEmp(sid,f,t,next){ next[sid]={f:f,t:t};
     if(!started[sid]){ days[sid]=(days[sid]||0)+1; started[sid]=1; } }
+  /* ポジションごとの優先スタッフ（①②③…）。その日に使うポジションだけ見る */
+  var USEPOS=posFor(MDAY);
+  var nPrio=USEPOS.filter(function(p){ return hasPrio(p.id); }).length;
   SLOTS.forEach(function(sl){
     var f=minutes(sl.from), t=minutes(sl.to), next={};
+    /* ⓪ ポジションごとの優先スタッフを先に確保する（1つのポジションに1人）。
+       上の順位の人がその時間に出られなければ、次の順位の人へ。だれも出られなければ空けておく。
+       確保した人は「どのポジションか」も一緒に覚えておき（pin）、あとでその場所に入れる */
+    if(nPrio) USEPOS.forEach(function(p){
+      if(Object.keys(next).length>=sl.need) return;
+      var lst=prioOf(p.id); if(!lst.length) return;
+      if(!fitsPos(p.id,MDAY,f,t)) return;             /* そのポジションを使う時間帯の外 */
+      for(var i=0;i<lst.length;i++){ var sid=lst[i];
+        if(next[sid]) continue;                       /* この枠ですでに別のポジションに確保ずみ */
+        if(!EMP[sid]&&done[sid]) continue;            /* もう上がった人 */
+        if(!freeAt(sid,f,t)) continue;                /* 休み・時間指定・他店と重なる */
+        var a=act[sid];
+        if(a&&a.pin===p.id&&freeAt(sid,a.f,t)&&(EMP[sid]||!MAXSH||t-a.f<=MAXSH)){ next[sid]=a; a.t=t; }
+        else { next[sid]={f:f,t:t,pin:p.id};
+          if(EMP[sid]){ if(!started[sid]){ days[sid]=(days[sid]||0)+1; started[sid]=1; } }
+          else days[sid]=(days[sid]||0)+1; }
+        break; }
+    });
     /* ① まず社員を入れる。すでに入っている社員はそのまま延長（終日つながった帯になる） */
-    if(nEmp) DATA.staff.filter(function(s){ return EMP[s.id]&&freeAt(s.id,f,t); })
+    if(nEmp) DATA.staff.filter(function(s){ return EMP[s.id]&&!next[s.id]&&freeAt(s.id,f,t); })
       .sort(function(x,y){ var ax=act[x.id]?0:1, ay=act[y.id]?0:1;   /* 続けて入っている人が先 */
         if(ax!==ay)return ax-ay; return rank(x,y); })
       .forEach(function(s){
         if(Object.keys(next).length>=sl.need)return;
-        if(act[s.id]&&freeAt(s.id,act[s.id].f,t)){ next[s.id]=act[s.id]; next[s.id].t=t; }
+        /* 優先ポジションに入っていた帯（pin）は、その時間が終わったらここで区切る（別の場所へ移るため） */
+        if(act[s.id]&&!act[s.id].pin&&freeAt(s.id,act[s.id].f,t)){ next[s.id]=act[s.id]; next[s.id].t=t; }
         else startEmp(s.id,f,t,next); });
     /* ② 前の枠から続けられるアルバイトを残す（長い帯になる）。
        人数が減る時間に誰を残すかは、上限を設けた店舗では「働いている時間が短い人を残す」
        ＝長く働いた人から先に上がってもらう（1時間だけの細切れシフトを防ぐ） */
-    var carry=Object.keys(act).filter(function(sid){ return !EMP[sid]&&!next[sid]; });
+    var carry=Object.keys(act).filter(function(sid){ return !EMP[sid]&&!next[sid]&&!act[sid].pin; });
     if(MAXSH) carry.sort(function(a,b){ return act[b].f-act[a].f; });
     carry.forEach(function(sid){ if(Object.keys(next).length<sl.need&&freeAt(sid,act[sid].f,t)
       &&(!MAXSH||t-act[sid].f<=MAXSH)){ next[sid]=act[sid]; next[sid].t=t; } });
@@ -785,17 +914,21 @@ function autoDraft(){
     while(Object.keys(next).length<sl.need&&cands.length){ var s=cands.shift(); next[s.id]={f:f,t:t}; days[s.id]=(days[s.id]||0)+1; }
     /* 続けて働く人（next に同じ帯が入っている人）以外は、ここで帯を確定させる。
        「!next[sid]」だと上がった人が同じ枠で入り直したときに帯を取りこぼすので、同じ帯かどうかで見る */
-    Object.keys(act).forEach(function(sid){ if(next[sid]!==act[sid])out.push({sid:sid,f:act[sid].f,t:act[sid].t}); });
+    Object.keys(act).forEach(function(sid){ if(next[sid]!==act[sid])out.push({sid:sid,f:act[sid].f,t:act[sid].t,pin:act[sid].pin}); });
     act=next;
   });
-  Object.keys(act).forEach(function(sid){ out.push({sid:sid,f:act[sid].f,t:act[sid].t}); });
+  Object.keys(act).forEach(function(sid){ out.push({sid:sid,f:act[sid].f,t:act[sid].t,pin:act[sid].pin}); });
   out.sort(function(x,y){return x.f-y.f||y.t-x.t;});
-  /* ポジション決め：担当できるポジションが少ない人から先に埋める（融通のきく人を後回しに） */
-  var placed=[], ng=0;
+  /* ポジション決め：優先スタッフで確保した帯（pin）を先に置き、
+     そのあと担当できるポジションが少ない人から埋める（融通のきく人を後回しに） */
+  var placed=[], ng=0, nPin=0;
+  function posFree(pid,f,t){ return !placed.some(function(x){ return x.pos===pid&&overlapMM(minutes(x.f),minutes(x.t),f,t); }); }
   out.map(function(e,i){ return i; })
-     .sort(function(a,b){ return capCount(out[a].sid)-capCount(out[b].sid); })
+     .sort(function(a,b){ var pa=out[a].pin?0:1, pb=out[b].pin?0:1;
+       if(pa!==pb)return pa-pb; return capCount(out[a].sid)-capCount(out[b].sid); })
      .forEach(function(i){ var e=out[i];
-       e.pos=freePos(placed,e.f,e.t,e.sid,MDAY);
+       if(e.pin&&posFree(e.pin,e.f,e.t)){ e.pos=e.pin; nPin++; }
+       else e.pos=freePos(placed,e.f,e.t,e.sid,MDAY);
        if(!canPos(staffBy(e.sid),e.pos))ng++;
        placed.push({pos:e.pos,f:fmtHM(e.f),t:fmtHM(e.t)}); });
   out.forEach(function(e){ DATA.shift[MDAY].push({id:uid(),sid:e.sid,pos:e.pos,f:fmtHM(e.f),t:fmtHM(e.t)}); });
@@ -803,6 +936,7 @@ function autoDraft(){
   var lack=0; SLOTS.forEach(function(sl){ var m=minutes(sl.from), got=0;
     out.forEach(function(e){ if(e.f<=m&&m<e.t)got++; }); if(got<sl.need) lack+=sl.need-got; });
   var msg="下書きを作成しました";
+  if(nPin) msg+="（優先スタッフ"+nPin+"件を先に配置）";
   var eIn={}; out.forEach(function(e){ if(EMP[e.sid]) eIn[e.sid]=1; });
   if(Object.keys(eIn).length) msg+="（社員"+Object.keys(eIn).length+"人を先に配置）";
   if(lack) msg+="（のべ"+lack+"時間ぶん人が足りません・赤い数字の時間）";
@@ -831,7 +965,7 @@ function mgrStaff(){
   return '<div class="card">'+(rows||'<p class="tip">タップして最初のスタッフを追加してください。</p>')
     +'<div class="addrow"><input id="newname" placeholder="スタッフの名前"><button onclick="addStaff()">追加</button></div></div>'
     +'<p class="tip">「条件」＝<b>社員かアルバイトか</b>・<b>両店舗で働くか</b>・基本の勤務可能時間・週の回数・<b>できるポジション</b>。設定すると「出られる」の日はその時間内でだけ組まれ、自動作成も回数と担当できるポジションを守ろうとします。</p>'
-    +'<p class="tip">👔<b>社員</b>にした人は、自動作成でいちばん先に配置されます（できるだけ長く1本の帯で）。そのあと足りないところにアルバイトが入ります。</p>'
+    +'<p class="tip">👔<b>社員</b>にした人は、自動作成でいちばん先に配置されます（できるだけ長く1本の帯で）。そのあと足りないところにアルバイトが入ります。<b>社員に入ってほしい場所</b>は「シフト作成」タブの<b>👑ポジションの優先スタッフ</b>で決められます（決めておくと、そのほかのポジションは社員が埋めずにアルバイトのために空きます）。</p>'
     +'<p class="tip">🔁<b>両店舗</b>にした人は、もう一方のお店の予定を見て、同じ時間に重ならないように組まれます。<b>両方のお店で同じ名前で登録</b>してください（名前で同じ人と判断します）。希望の入力は、お店を切り替えてそれぞれで行います。</p>'
     +'<p class="tip">↑↓で並び順を変えられます。この順番が「希望一覧」「印刷したシフト表」にもそのまま反映されます（色は人ごとに固定なので変わりません）。</p>';
 }
