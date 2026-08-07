@@ -163,7 +163,8 @@ function isHol(day){ var w=wday(day); return w===0||w===6||HOLIDAYS.indexOf(day)
 
 /* ====== 店舗ごとの設定 ======
    open/close   … ガントチャートの時間軸（分）
-   pos          … ポジション
+   pos          … ポジション（emp:1 を付けたものは「社員」の席。自動作成で社員はここへ先に入り、
+                  アルバイトはできるだけここを空けて他の場所に入ります）
    needWd/needHd… 開店時刻から1時間ごとの必要人数（平日／土日祝）
    band         … ポジションを使う時間帯（分）の初期値。店長画面「ポジションの時間設定」で
                   変更でき、変更した内容は DATA.postime に保存されます（この値より優先）
@@ -201,6 +202,7 @@ var SHOPS=[
   { id:"ochiai", name:"落合", doc:"shifttrial_ochiai",
     open:300, close:1260,                                    /* 5:00〜21:00 */
     pos:[
+      { id:"e1", label:"社員①", emp:1 }, { id:"e2", label:"社員②", emp:1 }, { id:"e3", label:"社員③", emp:1 },
       { id:"p1", label:"オーブン" }, { id:"p2", label:"カレーパン" }, { id:"p3", label:"昼①" },
       { id:"p4", label:"昼②" }, { id:"p5", label:"昼③" }, { id:"p6", label:"昼④" },
       { id:"p7", label:"午後①" }, { id:"p8", label:"午後②" }, { id:"p9", label:"午後③" },
@@ -298,7 +300,7 @@ function fsUrl(doc){ return "https://firestore.googleapis.com/v1/projects/"+FB.p
 function cloudGet(doc){ return fbAuth().then(function(t){return fetch(fsUrl(doc),{headers:{Authorization:"Bearer "+t}});}).then(function(r){ if(r.status===404)return null; if(!r.ok)throw 0; return r.json(); }).then(function(d){ return (d&&d.fields&&d.fields.json)?JSON.parse(d.fields.json.stringValue):null; }); }
 function cloudPut(doc,data){ doc=doc||SHOP.doc; data=data||DATA;
   var body=JSON.stringify({fields:{json:{stringValue:JSON.stringify(data)},ts:{integerValue:String(Date.now())}}});
-  return fbAuth().then(function(t){return fetch(fsUrl(doc)+"?updateMask.fieldPaths=json&updateMask.fieldPaths=ts",{method:"PATCH",keepalive:true,headers:{Authorization:"Bearer "+t,"Content-Type":"application/json"},body:body});}).then(function(r){ if(!r.ok)throw 0; if(data===DATA){ dirty=false; setSync("同期済"); } }).catch(function(){ if(data===DATA) setSync("後で同期"); }); }
+  return fbAuth().then(function(t){return fetch(fsUrl(doc)+"?updateMask.fieldPaths=json&updateMask.fieldPaths=ts",{method:"PATCH",keepalive:true,headers:{Authorization:"Bearer "+t,"Content-Type":"application/json"},body:body});}).then(function(r){ if(!r.ok)throw 0; if(data===DATA){ dirty=false; setSync("同期済"); } return true; }).catch(function(){ if(data===DATA) setSync("後で同期"); return false; }); }
 function save(){ DATA.updatedAt=Date.now(); dirty=true; setSync("同期中…");
   try{localStorage.setItem(cacheKey(SHOP.id),JSON.stringify(DATA));}catch(e){}
   var doc=SHOP.doc, data=DATA;
@@ -462,7 +464,7 @@ function viewStaff(st){
   return hd(PERIOD.label+"のシフト希望", st.name+"さん", false, true)
     +'<div class="wrap">'+shopSw()
     +'<p class="tip">出られない日は「休み」、時間の制限がある日だけ「時間指定」。何もしない日は「出られる」のままでOKです。途中で閉じても自動保存されます。</p>'
-    +(st.both?'<p class="tip">🔁 あなたは<b>両方のお店で働く</b>登録です。もう一方のお店の希望は、上のボタンでお店を切り替えて、そちらでも入力してください。</p>':'')+rows
+    +(st.both?'<p class="tip">🔁 あなたは<b>両方のお店で働く</b>登録です。この画面で「提出」すると、<b>同じ希望がもう一方のお店にも自動で反映</b>されます。お店ごとに希望を変えたいときは、上のボタンでお店を切り替えて、そちらで修正して提出し直してください。</p>':'')+rows
     +'<div style="text-align:center;margin-top:14px"><button class="linkbtn" onclick="pickRole(\'\')">名前の選択にもどる</button></div></div>'
     +'<div class="foot"><div class="stat">休み '+ngN+'日・時間指定 '+tmN+'日'+(sub?'　✅提出済み（修正したら再提出）':'')+'</div>'
     +'<button class="send" onclick="submitReq(\''+st.id+'\')">この内容で提出する</button></div>';
@@ -470,7 +472,39 @@ function viewStaff(st){
 function setReq(sid,day,s){ DATA.req[sid]=DATA.req[sid]||{}; var cur=DATA.req[sid][day]||{};
   DATA.req[sid][day]={ s:s, f:cur.f||"", t:cur.t||"" }; save(); render(); }
 function setTime(sid,day,k,v){ DATA.req[sid]=DATA.req[sid]||{}; var cur=DATA.req[sid][day]||{s:"tm"}; cur[k]=v; cur.s="tm"; DATA.req[sid][day]=cur; save(); }
-function submitReq(sid){ DATA.submitted[sid]=Date.now(); save(); toast("提出しました！ありがとうございます"); render(); }
+function submitReq(sid){ DATA.submitted[sid]=Date.now(); save(); toast("提出しました！ありがとうございます"); render();
+  var s=staffBy(sid);
+  if(s&&s.both) syncReqBoth(sid).then(function(rs){
+    rs.forEach(function(r){ if(!r)return;
+      if(r.ok) toast("🔁 "+r.ok+" にも同じ希望を反映しました");
+      else if(r.miss) toast("⚠ "+r.miss+" に同じ名前の登録が無いため反映できませんでした");
+      else if(r.fail) toast("⚠ "+r.fail+" へ反映できませんでした。お店を切り替えて提出してください"); });
+  });
+}
+/* ---- 両店舗かけもちスタッフの希望を、提出したときにもう一方のお店へも反映する ----
+   ・もう一方のお店の最新の保存内容を読み直してから、その人の希望と提出済みの印だけを書き換える
+   　（スタッフ登録やシフトなど、他の内容には触らない）
+   ・同じ人かどうかは名前で見る（同じ名前の登録が無いお店には何もしない） */
+function syncReqBoth(sid){
+  var s=staffBy(sid); if(!s||!s.both) return Promise.resolve([]);
+  var nm=nrmName(s.name), myReq=(DATA.req||{})[sid]||{}, ts=Date.now();
+  return Promise.all(otherShops().map(function(sh){
+    return cloudGet(sh.doc).then(function(d){
+      if(!d||!d.staff||!d.staff.length) return {miss:sh.name};
+      var m=d.staff.filter(function(x){ return nrmName(x.name)===nm; })[0];
+      if(!m) return {miss:sh.name};
+      d.req=d.req||{}; d.req[m.id]=JSON.parse(JSON.stringify(myReq));
+      d.submitted=d.submitted||{}; d.submitted[m.id]=ts;
+      m.both=1;                       /* 向こうのお店でも「両店舗」の印をそろえる */
+      d.updatedAt=ts;
+      return cloudPut(sh.doc,d).then(function(ok){
+        if(!ok) return {fail:sh.name};
+        /* 手元に持っている「他のお店のデータ」も新しくしておく */
+        XJSON[sh.id]=JSON.stringify(d); XDATA[sh.id]=d;
+        return {ok:sh.name}; });
+    }).catch(function(){ return {fail:sh.name}; });
+  }));
+}
 
 /* 店長 */
 function viewMgr(){
@@ -572,6 +606,9 @@ function freePos(list,f,t,sid,day){
       var pr=sid?prioRank(p.id,sid):-1;
       if(pr>=0) sc+=PRIO_PEN*2-pr;
       else if(hasPrio(p.id)) sc-=PRIO_PEN;
+      /* 「社員」の席（emp:1 のポジション）：社員はここへ先に入り、
+         アルバイトはできるだけ空けておく（他に空きがなければ今までどおり入れます） */
+      if(p.emp){ if(s&&s.emp) sc+=PRIO_PEN*2; else sc-=PRIO_PEN; }
       if(sc>bs){ bs=sc; best=p; } });
     if(best) return best.id; }
   return pick[0].id; }
@@ -656,7 +693,8 @@ function mgrBoard(){
     +'<span>概算人件費 ¥'+Math.round(totalMin/60*WAGE).toLocaleString()+'（時給'+WAGE.toLocaleString()+'円換算）</span></div>';
   /* 社員（先に配置する人）と、兼務スタッフの他店の予定を知らせる */
   var empNames=DATA.staff.filter(function(s){return s.emp;}).map(function(s){return s.name;});
-  var einfo=empNames.length? '<p class="tip">👔 社員：'+esc(empNames.join("・"))+'　…「✨下書きを自動作成」ではこの人たちを先に入れ、足りないところにアルバイトが入ります。</p>' : '';
+  var hasEmpPos=POS.some(function(p){return p.emp;});
+  var einfo=empNames.length? '<p class="tip">👔 社員：'+esc(empNames.join("・"))+'　…「✨下書きを自動作成」ではこの人たちを先に'+(hasEmpPos?'ポジション「社員①②③」へ':'')+'入れ、足りないところにアルバイトが入ります。</p>' : '';
   /* ポジションごとの優先スタッフ（①②③）。この日に使うポジションだけ出す */
   var plines=use.map(function(p){ var l=prioOf(p.id); if(!l.length)return "";
     return esc(p.label)+'：'+l.map(function(sid,i){ var s=staffBy(sid);
@@ -682,7 +720,7 @@ function timeOpts(sel){ var o=""; for(var m=DAY_OPEN;m<=DAY_CLOSE;m+=30){ var v=
 function openEnt(day,eid,posDef,fDef){
   var ents=shiftOf(day), e=null; ENTDAY=day;
   if(eid){ e=ents.filter(function(x){return x.id===eid;})[0]; if(!e)return; }
-  var dflt=posDef||(posFor(day)[0]||POS[0]).id;
+  var dflt=posDef||((posFor(day).filter(function(p){return !p.emp;})[0])||posFor(day)[0]||POS[0]).id;
   var b=bandOf(dflt,day);   /* ポジションの目安の帯があれば初期値にする */
   var f=e?e.f:fmtHM(fDef!=null?fDef:(b?b[0]:DAY_OPEN));
   var t=e?e.t:fmtHM(Math.min((fDef==null&&b)?b[1]:minutes(f)+240,DAY_CLOSE));
@@ -966,7 +1004,7 @@ function mgrStaff(){
     +'<div class="addrow"><input id="newname" placeholder="スタッフの名前"><button onclick="addStaff()">追加</button></div></div>'
     +'<p class="tip">「条件」＝<b>社員かアルバイトか</b>・<b>両店舗で働くか</b>・基本の勤務可能時間・週の回数・<b>できるポジション</b>。設定すると「出られる」の日はその時間内でだけ組まれ、自動作成も回数と担当できるポジションを守ろうとします。</p>'
     +'<p class="tip">👔<b>社員</b>にした人は、自動作成でいちばん先に配置されます（できるだけ長く1本の帯で）。そのあと足りないところにアルバイトが入ります。<b>社員に入ってほしい場所</b>は「シフト作成」タブの<b>👑ポジションの優先スタッフ</b>で決められます（決めておくと、そのほかのポジションは社員が埋めずにアルバイトのために空きます）。</p>'
-    +'<p class="tip">🔁<b>両店舗</b>にした人は、もう一方のお店の予定を見て、同じ時間に重ならないように組まれます。<b>両方のお店で同じ名前で登録</b>してください（名前で同じ人と判断します）。希望の入力は、お店を切り替えてそれぞれで行います。</p>'
+    +'<p class="tip">🔁<b>両店舗</b>にした人は、もう一方のお店の予定を見て、同じ時間に重ならないように組まれます。<b>両方のお店で同じ名前で登録</b>してください（名前で同じ人と判断します）。希望は<b>どちらかのお店で提出すれば両方に反映</b>されます。</p>'
     +'<p class="tip">↑↓で並び順を変えられます。この順番が「希望一覧」「印刷したシフト表」にもそのまま反映されます（色は人ごとに固定なので変わりません）。</p>';
 }
 function moveStaff(i,dir){ var j=i+dir; if(j<0||j>=DATA.staff.length)return;
