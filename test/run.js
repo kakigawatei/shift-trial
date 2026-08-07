@@ -248,7 +248,9 @@ async function part5() {
   const totalHd = hdEnts.reduce((a, e) => a + (S.minutes(e.t) - S.minutes(e.f)), 0) / 60;
   eq(totalHd, 34, "落合 土日祝ののべ時間は34時間");
   eq(hdEnts.filter((e) => e.pos === "p10").length, 0, "土日祝は外販に人を入れない");
-  ok(wdEnts.some((e) => e.pos === "p10"), "平日は外販が使われる");
+  /* 外販は頭数に数えない独立ポジションになったので、頭数あわせの人は自動では置かれない
+     （外販の優先スタッフがいる場合だけ入る。gaihan.js で確認） */
+  eq(wdEnts.filter((e) => e.pos === "p10").length, 0, "平日も頭数あわせの人は外販に置かれない");
 
   /* 目安の帯に沿って置かれているか */
   const early = wdEnts.filter((e) => S.minutes(e.f) === 300)[0];

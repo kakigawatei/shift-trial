@@ -38,7 +38,8 @@ function measure(shop) {
       const ents = S.DATA.shift[day] || [], byPos = {};
       T.bands += ents.length;
       ents.forEach((e) => { (byPos[e.pos] = byPos[e.pos] || []).push(e); });
-      const empty = S.posFor(day).map((p) => p.id).filter((p) => !byPos[p]).length;
+      /* 外販など nc のポジションは頭数あわせの置き場所ではないので「空きポジション」に数えない */
+      const empty = S.posFor(day).filter((p) => !p.nc).map((p) => p.id).filter((p) => !byPos[p]).length;
       let mm = 0;
       Object.keys(byPos).forEach((p) => {
         const es = byPos[p]; if (es.length > 1) mm += es.length - 1;
@@ -69,8 +70,11 @@ console.log("\n== 落合（1人6時間まで・ポジションの時間あり）
   ok(T.bands > 1000, "じゅうぶんな量を試した", T.bands);
   ok(T.overlap === 0, "同じポジション・同じ時間に重ねた帯は0（ガントで帯が隠れない）", T.overlap);
   ok(T.dupPerson === 0, "同じ人が1日に2本に分かれた帯は0（修正前" + B.dupPerson + "件の細切れ→0）", T.dupPerson);
-  ok(T.multi * 5 < B.multi, "同じポジションに複数人が大きく減った（修正前" + B.multi + "件→" + T.multi + "件）", T.multi);
-  ok(T.withEmpty * 5 < B.withEmpty, "『空いているポジションがあるのに同じ所へ』（修正前" + B.withEmpty + "日→" + T.withEmpty + "日／" + T.days + "日）", T.withEmpty);
+  /* 外販を頭数から外した(2026-08-07)ため、外販の時間帯(8-14時)に必要人数がポジション数を超えると
+     同じポジションに2人入る日が増える（外販に頭数あわせの人を置かなくなったぶん。修正前248件よりは大幅に少ない）。
+     ここより悪くなっていないことを見る */
+  ok(T.multi <= 128, "同じポジションに複数人が増えていない（外販除外の基準値128件→" + T.multi + "件・修正前は" + B.multi + "件）", T.multi);
+  ok(T.withEmpty <= 112, "『空いているポジションがあるのに同じ所へ』が増えていない（基準値112日→" + T.withEmpty + "日／" + T.days + "日・修正前は" + B.withEmpty + "日）", T.withEmpty);
   /* 時間帯から外れる残りは、その人の「できるポジション」が限られていて置き場所が無い場合。
      店長に⚠で見えているので直せる。修正前より増えていないことだけ確かめる */
   ok(T.outBand <= B.outBand, "ポジションの時間帯から外れた帯が増えていない（修正前" + B.outBand + "件→" + T.outBand + "件）", T.outBand);
